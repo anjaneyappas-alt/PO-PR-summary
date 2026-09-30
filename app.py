@@ -37,6 +37,7 @@ st.markdown("""
             text-align: center !important;
             border: 1px solid #bfbfbf !important;
             padding: 6px 10px !important;
+            white-space: nowrap !important;
         }
         
         /* Excel Data Cells & Gridlines */
@@ -44,6 +45,7 @@ st.markdown("""
             border: 1px solid #d9d9d9 !important;
             padding: 4px 8px !important;
             color: #000000 !important;
+            white-space: nowrap !important;
         }
         
         /* Zebra Striping (Light Excel rows) */
@@ -106,17 +108,23 @@ if show_uploaders:
                 merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO'])
                 merged['PO Qty'] = merged['PO_Qty'].fillna(0).astype(int)
                 merged['PR Qty'] = merged['PR_Qty'].fillna(0).astype(int)
-                merged['Excess / Short'] = merged['PR Qty'] - merged['PO Qty']
+                
+                # Calculate separate Excess and Short columns
+                merged['Diff'] = merged['PR Qty'] - merged['PO Qty']
+                merged['Excess'] = merged['Diff'].apply(lambda x: x if x > 0 else 0)
+                merged['Short'] = merged['Diff'].apply(lambda x: abs(x) if x < 0 else 0)
+                
                 merged['Sl.no'] = range(1, len(merged) + 1)
 
                 # Overall Calculations
                 total_po = merged['PO Qty'].sum()
                 total_pr = merged['PR Qty'].sum()
-                total_diff = merged['Excess / Short'].sum()
+                total_excess = merged['Excess'].sum()
+                total_short = merged['Short'].sum()
                 total_fr = (total_pr / total_po * 100) if total_po > 0 else 0
 
                 # Column Ordering
-                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "Excess / Short"]
+                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "Excess", "Short"]
                 final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No'})
 
                 # Format Fill Rate %
@@ -131,7 +139,8 @@ if show_uploaders:
                     "Vendor Name": "Total",
                     "PO Qty": total_po,
                     "PR Qty": total_pr,
-                    "Excess / Short": total_diff,
+                    "Excess": total_excess,
+                    "Short": total_short,
                     "PO FR %": f"{int(round(total_fr))}%"
                 }])
 
@@ -148,20 +157,33 @@ if show_uploaders:
 if "processed_df" in st.session_state:
     final_df = st.session_state["processed_df"]
 
-    # Excel-style Highlight for Total Row
-    def highlight_total_row(row):
+    # Excel-style Highlight for Total Row and Conditional Coloring for Excess / Short
+    def apply_custom_styles(row):
+        styles = [''] * len(row)
         if row['Vendor Name'] == 'Total':
             return ['background-color: #f4b084; font-weight: bold; color: black; border-top: 2px solid black; border-bottom: 2px double black'] * len(row)
-        return [''] * len(row)
+        
+        # Excess column highlight (Light Green)
+        if row['Excess'] > 0:
+            excess_idx = final_df.columns.get_loc('Excess')
+            styles[excess_idx] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            
+        # Short column highlight (Light Red)
+        if row['Short'] > 0:
+            short_idx = final_df.columns.get_loc('Short')
+            styles[short_idx] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+            
+        return styles
 
-    styled_df = final_df.style.apply(highlight_total_row, axis=1)
+    styled_df = final_df.style.apply(apply_custom_styles, axis=1)
 
     # Render as native HTML Excel Table
     st.table(styled_df)
 
-    # --- FUNCTION TO GENERATE HIGH-RES PNG AT THE BOTTOM ---
+    # --- FUNCTION TO GENERATE HIGH-RES PNG WITH WIDER COLUMNS AND CONDITIONAL COLORING ---
     def generate_summary_image(df):
-        fig, ax = plt.subplots(figsize=(14, len(df) * 0.35 + 1.5))
+        # Increased figure width to 18 to ensure full visibility for Vendor Name
+        fig, ax = plt.subplots(figsize=(18, len(df) * 0.35 + 1.5))
         ax.axis('off')
         
         # Draw Matplotlib table matching Excel layout
@@ -174,8 +196,27 @@ if "processed_df" in st.session_state:
         table.auto_set_font_size(False)
         table.set_fontsize(9)
         table.scale(1.2, 1.4)
-        
-        # Color headers and Total row in image
+
+        # Explicitly set column widths to prevent truncation of Vendor Name
+        col_widths = {
+            0: 0.04,  # Sl.no
+            1: 0.08,  # Date
+            2: 0.10,  # PO No
+            3: 0.14,  # PR No
+            4: 0.24,  # Vendor Name (Wide enough for long vendor names)
+            5: 0.08,  # PO Qty
+            6: 0.08,  # PR Qty
+            7: 0.08,  # Excess
+            8: 0.08,  # Short
+            9: 0.08   # PO FR %
+        }
+        for (row, col), cell in table.get_celld().items():
+            cell.set_width(col_widths.get(col, 0.1))
+
+        excess_col_idx = df.columns.get_loc('Excess')
+        short_col_idx = df.columns.get_loc('Short')
+
+        # Color headers, conditional rows, and Total row in image
         for (row, col), cell in table.get_celld().items():
             if row == 0:
                 cell.set_facecolor('#e6e6e6')
@@ -183,6 +224,15 @@ if "processed_df" in st.session_state:
             elif row == len(df):
                 cell.set_facecolor('#f4b084')
                 cell.set_text_props(color='black', weight='bold')
+            else:
+                # Excess Highlight (Light Green)
+                if col == excess_col_idx and df.iloc[row - 1]['Excess'] > 0:
+                    cell.set_facecolor('#d4edda')
+                    cell.set_text_props(color='#155724', weight='bold')
+                # Short Highlight (Light Red)
+                elif col == short_col_idx and df.iloc[row - 1]['Short'] > 0:
+                    cell.set_facecolor('#f8d7da')
+                    cell.set_text_props(color='#721c24', weight='bold')
 
         img_buf = io.BytesIO()
         plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=200)
