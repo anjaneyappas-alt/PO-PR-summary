@@ -6,12 +6,13 @@ st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide
 
 st.title("📊 PO vs PR Summary")
 
-# File Uploaders
-col1, col2 = st.columns(2)
-with col1:
-    po_file = st.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
-with col2:
-    pr_file = st.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
+# Place file uploaders inside an expander so they can be hidden/collapsed
+with st.expander("📁 Click here to Upload / Change PO & PR Data Files", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        po_file = st.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
+    with col2:
+        pr_file = st.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
 
 if po_file and pr_file:
     try:
@@ -43,13 +44,8 @@ if po_file and pr_file:
             merged = pd.merge(pr_summary, po_summary, left_on='PO Number', right_on='Purchase Order Number', how='left')
             
             # --- CHRONOLOGICAL SORTING LOGIC ---
-            # Parse dates into datetime objects for accurate chronological sorting
             merged['Raw_Date'] = pd.to_datetime(merged['PR_Date'], errors='coerce')
-            
-            # Sort from earliest date to latest date
             merged = merged.sort_values(by='Raw_Date', ascending=True).reset_index(drop=True)
-            
-            # Format date for display (dd-mm-yy)
             merged['Date'] = merged['Raw_Date'].dt.strftime('%d-%m-%y')
             
             # Fill vendor and quantity values
@@ -57,8 +53,6 @@ if po_file and pr_file:
             merged['PO Qty'] = merged['PO_Qty'].fillna(0).astype(int)
             merged['PR Qty'] = merged['PR_Qty'].fillna(0).astype(int)
             merged['Excess / Short'] = merged['PR Qty'] - merged['PO Qty']
-            
-            # Assign sequential Serial Numbers after sorting
             merged['Sl.no'] = range(1, len(merged) + 1)
 
             # --- TOP KEY METRICS CARDS ---
@@ -107,7 +101,7 @@ if po_file and pr_file:
 
             styled_df = final_df.style.apply(highlight_total_row, axis=1)
 
-            # st.table renders directly onto the web page without inner scrollbars
+            # Render Table directly on the page
             st.table(styled_df)
 
     except Exception as e:
