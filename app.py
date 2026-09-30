@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-# 1. Wide Layout fills the ENTIRE screen width
+# 1. Wide Layout fills the entire screen
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
 
 st.title("📊 PO vs PR Summary")
@@ -42,12 +42,23 @@ if po_file and pr_file:
             # Merge Data
             merged = pd.merge(pr_summary, po_summary, left_on='PO Number', right_on='Purchase Order Number', how='left')
             
-            # Format Data
-            merged['Date'] = pd.to_datetime(merged['PR_Date'], errors='coerce').dt.strftime('%d-%m-%y')
+            # --- CHRONOLOGICAL SORTING LOGIC ---
+            # Parse dates into datetime objects for accurate chronological sorting
+            merged['Raw_Date'] = pd.to_datetime(merged['PR_Date'], errors='coerce')
+            
+            # Sort from earliest date to latest date
+            merged = merged.sort_values(by='Raw_Date', ascending=True).reset_index(drop=True)
+            
+            # Format date for display (dd-mm-yy)
+            merged['Date'] = merged['Raw_Date'].dt.strftime('%d-%m-%y')
+            
+            # Fill vendor and quantity values
             merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO'])
             merged['PO Qty'] = merged['PO_Qty'].fillna(0).astype(int)
             merged['PR Qty'] = merged['PR_Qty'].fillna(0).astype(int)
             merged['Excess / Short'] = merged['PR Qty'] - merged['PO Qty']
+            
+            # Assign sequential Serial Numbers after sorting
             merged['Sl.no'] = range(1, len(merged) + 1)
 
             # --- TOP KEY METRICS CARDS ---
