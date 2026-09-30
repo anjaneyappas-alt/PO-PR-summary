@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+import io
 
 # Standard page config with wide layout
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
@@ -156,3 +158,43 @@ if "processed_df" in st.session_state:
 
     # Render as native HTML Excel Table
     st.table(styled_df)
+
+    # --- FUNCTION TO GENERATE HIGH-RES PNG AT THE BOTTOM ---
+    def generate_summary_image(df):
+        fig, ax = plt.subplots(figsize=(14, len(df) * 0.35 + 1.5))
+        ax.axis('off')
+        
+        # Draw Matplotlib table matching Excel layout
+        table = ax.table(
+            cellText=df.values,
+            colLabels=df.columns,
+            cellLoc='center',
+            loc='center'
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.2, 1.4)
+        
+        # Color headers and Total row in image
+        for (row, col), cell in table.get_celld().items():
+            if row == 0:
+                cell.set_facecolor('#e6e6e6')
+                cell.set_text_props(color='black', weight='bold')
+            elif row == len(df):
+                cell.set_facecolor('#f4b084')
+                cell.set_text_props(color='black', weight='bold')
+
+        img_buf = io.BytesIO()
+        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=200)
+        plt.close(fig)
+        return img_buf.getvalue()
+
+    # Image Download Button at the bottom
+    st.markdown("---")
+    img_bytes = generate_summary_image(final_df)
+    st.download_button(
+        label="📸 Download Summary as PNG Image",
+        data=img_bytes,
+        file_name="PO_PR_Summary.png",
+        mime="image/png"
+    )
