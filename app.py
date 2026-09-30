@@ -1,5 +1,3 @@
-<ElicitationsGroup>
-```python
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,7 +6,7 @@ import io
 # Page config - Full Wide Layout
 st.set_page_config(page_title="PO vs PR Dashboard", page_icon="📊", layout="wide")
 
-# Custom Modern Clean Dashboard CSS (No Excel lines, elegant padding, soft hover)
+# Custom Modern Clean Dashboard CSS
 st.markdown("""
     <style>
         /* Hide default Streamlit headers, footers, and menu bars */
@@ -272,7 +270,7 @@ if "processed_df" in st.session_state:
             1: 0.07,  # Date
             2: 0.09,  # PO No
             3: 0.13,  # PR No
-            4: 0.27,  # Vendor Name (Wide spacing)
+            4: 0.27,  # Vendor Name
             5: 0.07,  # PO Qty
             6: 0.07,  # PR Qty
             7: 0.07,  # Excess
@@ -318,5 +316,3 @@ if "processed_df" in st.session_state:
         file_name="PO_PR_Dashboard.png",
         mime="image/png"
     )
-```
-</ElicitationsGroup>
