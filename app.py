@@ -281,7 +281,7 @@ if "processed_df" in st.session_state:
             x_pos = i * col_width + col_width / 2
             # Metric Box
             rect = plt.Rectangle((i * col_width + 0.01, 0.1), col_width - 0.02, 0.55, 
-                                 facecolor='#1e222d', edgecolor='#2e3440', cornercolor='none',
+                                 facecolor='#1e222d', edgecolor='#2e3440',
                                  transform=ax_kpi.transAxes, zorder=2)
             ax_kpi.add_patch(rect)
             ax_kpi.text(x_pos, 0.48, label, color='#a0a0a0', fontsize=10, ha='center', va='center')
