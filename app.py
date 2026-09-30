@@ -249,22 +249,60 @@ if "processed_df" in st.session_state:
     html_table += "</tbody></table></div>"
     st.markdown(html_table, unsafe_allow_html=True)
 
-    # --- HIGH-RES IMAGE EXPORT GENERATOR ---
-    def generate_summary_image(df):
-        fig, ax = plt.subplots(figsize=(18, len(df) * 0.4 + 1.5))
-        ax.axis('off')
+    # --- ULTRA HD FULL DASHBOARD CAPTURE (METRICS + TABLE) ---
+    def generate_full_dashboard_hd(df, metrics_tuple):
+        total_pos, total_po, total_pr, total_excess, total_short, total_fr = metrics_tuple
         
-        table = ax.table(
+        # Calculate dynamic figure height based on rows
+        fig_height = 3.5 + len(df) * 0.45
+        fig = plt.figure(figsize=(20, fig_height), facecolor='#0e1117')
+        
+        # Grid Layout: Top 15% for KPIs, Bottom 85% for Table
+        gs = fig.add_gridspec(2, 1, height_ratios=[1.2, len(df) * 0.45])
+        
+        # 1. Render Key Metrics Section
+        ax_kpi = fig.add_subplot(gs[0])
+        ax_kpi.set_facecolor('#0e1117')
+        ax_kpi.axis('off')
+        
+        ax_kpi.text(0.01, 0.8, "🎯 Key Metrics", color='white', fontsize=16, fontweight='bold')
+        
+        kpis = [
+            ("Total POs", f"{total_pos:,}"),
+            ("PO Qty", f"{total_po:,}"),
+            ("PR Qty", f"{total_pr:,}"),
+            ("Excess Qty", f"{total_excess:,}"),
+            ("Short Qty", f"-{total_short:,}"),
+            ("Fill Rate", f"{total_fr:.1f}%")
+        ]
+        
+        col_width = 1.0 / len(kpis)
+        for i, (label, val) in enumerate(kpis):
+            x_pos = i * col_width + col_width / 2
+            # Metric Box
+            rect = plt.Rectangle((i * col_width + 0.01, 0.1), col_width - 0.02, 0.55, 
+                                 facecolor='#1e222d', edgecolor='#2e3440', cornercolor='none',
+                                 transform=ax_kpi.transAxes, zorder=2)
+            ax_kpi.add_patch(rect)
+            ax_kpi.text(x_pos, 0.48, label, color='#a0a0a0', fontsize=10, ha='center', va='center')
+            ax_kpi.text(x_pos, 0.25, val, color='white', fontsize=14, fontweight='bold', ha='center', va='center')
+
+        # 2. Render Full Data Table
+        ax_table = fig.add_subplot(gs[1])
+        ax_table.set_facecolor('#0e1117')
+        ax_table.axis('off')
+        
+        table = ax_table.table(
             cellText=df.values,
             colLabels=df.columns,
             cellLoc='center',
-            loc='center'
+            loc='upper center'
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        table.scale(1.2, 1.5)
+        table.set_fontsize(10)
+        table.scale(1.2, 1.6)
 
-        # Full visibility column width mapping
+        # Full visibility column widths
         col_widths = {
             0: 0.04,  # Sl.no
             1: 0.07,  # Date
@@ -283,7 +321,7 @@ if "processed_df" in st.session_state:
         excess_col_idx = df.columns.get_loc('Excess')
         short_col_idx = df.columns.get_loc('Short')
 
-        # Custom styling for export image
+        # Lossless Color Styling matching Dashboard Theme
         for (row, col), cell in table.get_celld().items():
             if row == 0:
                 cell.set_facecolor('#2b303c')
@@ -292,27 +330,30 @@ if "processed_df" in st.session_state:
                 cell.set_facecolor('#f4b084')
                 cell.set_text_props(color='black', weight='bold')
             else:
-                cell.set_facecolor('#ffffff')
-                # Excess Highlight
+                cell.set_facecolor('#1e222d')
+                cell.set_text_props(color='#e0e0e0')
+                # Excess Highlight Badge
                 if col == excess_col_idx and df.iloc[row - 1]['Excess'] > 0:
-                    cell.set_facecolor('#d4edda')
-                    cell.set_text_props(color='#155724', weight='bold')
-                # Short Highlight
+                    cell.set_facecolor('#1e3a29')
+                    cell.set_text_props(color='#2ecc71', weight='bold')
+                # Short Highlight Badge
                 elif col == short_col_idx and df.iloc[row - 1]['Short'] > 0:
-                    cell.set_facecolor('#f8d7da')
-                    cell.set_text_props(color='#721c24', weight='bold')
+                    cell.set_facecolor('#3a1e22')
+                    cell.set_text_props(color='#e74c3c', weight='bold')
 
         img_buf = io.BytesIO()
-        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=200)
+        plt.tight_layout()
+        # High-DPI Lossless PNG Output (300 DPI)
+        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=300, facecolor='#0e1117')
         plt.close(fig)
         return img_buf.getvalue()
 
-    # Image Download Button
+    # HD Capture Download Button
     st.markdown("---")
-    img_bytes = generate_summary_image(final_df)
+    hd_img_bytes = generate_full_dashboard_hd(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
     st.download_button(
-        label="📸 Download Summary as PNG Image",
-        data=img_bytes,
-        file_name="PO_PR_Dashboard.png",
+        label="📸 Capture & Download Full Dashboard (HD PNG)",
+        data=hd_img_bytes,
+        file_name="PO_PR_Full_Dashboard_HD.png",
         mime="image/png"
     )
