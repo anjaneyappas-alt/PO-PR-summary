@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 
-# 1. Centered Layout keeps columns compact and prevents wide empty gaps
-st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="centered")
+# 1. Wide Layout fills the ENTIRE screen width
+st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
 
 st.title("📊 PO vs PR Summary")
 
@@ -50,7 +50,7 @@ if po_file and pr_file:
             merged['Excess / Short'] = merged['PR Qty'] - merged['PO Qty']
             merged['Sl.no'] = range(1, len(merged) + 1)
 
-            # --- TOP KPI CARDS ---
+            # --- TOP KEY METRICS CARDS ---
             total_po = merged['PO Qty'].sum()
             total_pr = merged['PR Qty'].sum()
             total_diff = merged['Excess / Short'].sum()
@@ -66,14 +66,14 @@ if po_file and pr_file:
 
             st.markdown("---")
 
-            # Final Table Structure
+            # Final Data Structure
             expected_headers = ["Sl.no", "Date", "PO Number", "Vendor Name", "PO Qty", "PR Qty", "Excess / Short"]
             final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No'})
 
-            # Format Fill Rate % column
+            # Format Fill Rate %
             final_df['PO FR %'] = ((final_df['PR Qty'] / final_df['PO Qty']).fillna(0) * 100).round(0).astype(int).astype(str) + '%'
 
-            # Total Row Creation
+            # Create Total Row
             total_row = pd.DataFrame([{
                 "Sl.no": "",
                 "Date": "",
@@ -88,7 +88,7 @@ if po_file and pr_file:
             # Append Total Row
             final_df = pd.concat([final_df, total_row], ignore_index=True)
 
-            # Style Total Row (Highlight in distinct color)
+            # Style Total Row (Orange Highlight)
             def highlight_total_row(row):
                 if row['Vendor Name'] == 'Total':
                     return ['background-color: #f4b084; font-weight: bold; color: black'] * len(row)
@@ -96,22 +96,8 @@ if po_file and pr_file:
 
             styled_df = final_df.style.apply(highlight_total_row, axis=1)
 
-            # Display Compact Table showing ~40 rows at once
-            st.dataframe(
-                styled_df,
-                hide_index=True,
-                height=1400,  # Displays ~40 rows in a single window view
-                column_config={
-                    "Sl.no": st.column_config.Column(width=60),
-                    "Date": st.column_config.Column(width=90),
-                    "PO No": st.column_config.Column(width=120),
-                    "Vendor Name": st.column_config.Column(width=220),
-                    "PO Qty": st.column_config.NumberColumn(width=80, format="%d"),
-                    "PR Qty": st.column_config.NumberColumn(width=80, format="%d"),
-                    "Excess / Short": st.column_config.NumberColumn(width=100, format="%d"),
-                    "PO FR %": st.column_config.Column(width=80),
-                }
-            )
+            # st.table renders directly onto the web page without inner scrollbars
+            st.table(styled_df)
 
     except Exception as e:
         st.error(f"Error processing files: {e}")
