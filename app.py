@@ -1,26 +1,24 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+import io
 
 # Page config
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
 
-# CSS to hide top menu, header decorations, and the bottom "Manage app" badge for clean screenshots
+# CSS to hide top menu and footer for clean web view
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
         header {visibility: hidden;}
         footer {visibility: hidden;}
-        .stActionButton {display: none;}
         [data-testid="stHeader"] {display: none;}
-        div[data-testid="stDecoration"] {display: none;}
-        div[data-testid="stStatusWidget"] {display: none;}
-        section[data-testid="stSidebar"] {z-index: 100;}
     </style>
 """, unsafe_allow_html=True)
 
 st.title("📊 PO vs PR Summary")
 
-# Move file uploaders to the sidebar so they stay completely out of your screenshot view
+# Sidebar for file upload
 st.sidebar.header("📁 Data Upload")
 po_file = st.sidebar.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
 pr_file = st.sidebar.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
@@ -72,6 +70,7 @@ if po_file and pr_file:
             total_diff = merged['Excess / Short'].sum()
             total_fr = (total_pr / total_po * 100) if total_po > 0 else 0
 
+            # Display Key Metrics
             st.markdown("### 🎯 Key Metrics")
             kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
             kpi1.metric("Total POs", f"{len(merged):,}")
@@ -104,7 +103,7 @@ if po_file and pr_file:
             # Append Total Row
             final_df = pd.concat([final_df, total_row], ignore_index=True)
 
-            # Style Total Row (Orange Highlight)
+            # Style Total Row for web view
             def highlight_total_row(row):
                 if row['Vendor Name'] == 'Total':
                     return ['background-color: #f4b084; font-weight: bold; color: black'] * len(row)
@@ -112,7 +111,46 @@ if po_file and pr_file:
 
             styled_df = final_df.style.apply(highlight_total_row, axis=1)
 
-            # Table Output
+            # --- FUNCTION TO GENERATE IMAGE PNG ---
+            def generate_summary_image(df):
+                fig, ax = plt.subplots(figsize=(12, len(df) * 0.35 + 1.5))
+                ax.axis('off')
+                
+                # Render table image
+                table = ax.table(
+                    cellText=df.values,
+                    colLabels=df.columns,
+                    cellLoc='center',
+                    loc='center'
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1.2, 1.4)
+                
+                # Color headers and Total row in image
+                for (row, col), cell in table.get_celld().items():
+                    if row == 0:
+                        cell.set_facecolor('#262730')
+                        cell.set_text_props(color='white', weight='bold')
+                    elif row == len(df):
+                        cell.set_facecolor('#f4b084')
+                        cell.set_text_props(color='black', weight='bold')
+
+                img_buf = io.BytesIO()
+                plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=200)
+                plt.close(fig)
+                return img_buf.getvalue()
+
+            # Render Download Button above table
+            img_bytes = generate_summary_image(final_df)
+            st.download_button(
+                label="📸 Download Summary as PNG Image",
+                data=img_bytes,
+                file_name="PO_PR_Summary.png",
+                mime="image/png"
+            )
+
+            # Display Web Table
             st.table(styled_df)
 
     except Exception as e:
