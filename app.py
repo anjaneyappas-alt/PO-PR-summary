@@ -1,18 +1,29 @@
 import streamlit as st
 import pandas as pd
 
-# 1. Wide Layout fills the entire screen
+# Page config
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
+
+# CSS to hide top menu, header decorations, and the bottom "Manage app" badge for clean screenshots
+st.markdown("""
+    <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .stActionButton {display: none;}
+        [data-testid="stHeader"] {display: none;}
+        div[data-testid="stDecoration"] {display: none;}
+        div[data-testid="stStatusWidget"] {display: none;}
+        section[data-testid="stSidebar"] {z-index: 100;}
+    </style>
+""", unsafe_allow_html=True)
 
 st.title("📊 PO vs PR Summary")
 
-# Place file uploaders inside an expander so they can be hidden/collapsed
-with st.expander("📁 Click here to Upload / Change PO & PR Data Files", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        po_file = st.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
-    with col2:
-        pr_file = st.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
+# Move file uploaders to the sidebar so they stay completely out of your screenshot view
+st.sidebar.header("📁 Data Upload")
+po_file = st.sidebar.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
+pr_file = st.sidebar.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
 
 if po_file and pr_file:
     try:
@@ -43,19 +54,19 @@ if po_file and pr_file:
             # Merge Data
             merged = pd.merge(pr_summary, po_summary, left_on='PO Number', right_on='Purchase Order Number', how='left')
             
-            # --- CHRONOLOGICAL SORTING LOGIC ---
+            # Sort chronologically from earliest to latest
             merged['Raw_Date'] = pd.to_datetime(merged['PR_Date'], errors='coerce')
             merged = merged.sort_values(by='Raw_Date', ascending=True).reset_index(drop=True)
             merged['Date'] = merged['Raw_Date'].dt.strftime('%d-%m-%y')
             
-            # Fill vendor and quantity values
+            # Clean values
             merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO'])
             merged['PO Qty'] = merged['PO_Qty'].fillna(0).astype(int)
             merged['PR Qty'] = merged['PR_Qty'].fillna(0).astype(int)
             merged['Excess / Short'] = merged['PR Qty'] - merged['PO Qty']
             merged['Sl.no'] = range(1, len(merged) + 1)
 
-            # --- TOP KEY METRICS CARDS ---
+            # Metrics
             total_po = merged['PO Qty'].sum()
             total_pr = merged['PR Qty'].sum()
             total_diff = merged['Excess / Short'].sum()
@@ -71,14 +82,14 @@ if po_file and pr_file:
 
             st.markdown("---")
 
-            # Final Data Structure
+            # Final Table Formatting
             expected_headers = ["Sl.no", "Date", "PO Number", "Vendor Name", "PO Qty", "PR Qty", "Excess / Short"]
             final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No'})
 
             # Format Fill Rate %
             final_df['PO FR %'] = ((final_df['PR Qty'] / final_df['PO Qty']).fillna(0) * 100).round(0).astype(int).astype(str) + '%'
 
-            # Create Total Row
+            # Total Row
             total_row = pd.DataFrame([{
                 "Sl.no": "",
                 "Date": "",
@@ -101,8 +112,10 @@ if po_file and pr_file:
 
             styled_df = final_df.style.apply(highlight_total_row, axis=1)
 
-            # Render Table directly on the page
+            # Table Output
             st.table(styled_df)
 
     except Exception as e:
         st.error(f"Error processing files: {e}")
+else:
+    st.info("👈 Please upload your PO and PR Excel files using the left sidebar to generate the summary.")
