@@ -6,7 +6,7 @@ import io
 # Page config - Full Wide Layout
 st.set_page_config(page_title="PO vs PR Dashboard", page_icon="📊", layout="wide")
 
-# Custom Modern Clean Dashboard CSS
+# Custom Clean Light Dashboard CSS (White Background)
 st.markdown("""
     <style>
         /* Hide default Streamlit headers, footers, and menu bars */
@@ -15,54 +15,52 @@ st.markdown("""
         footer {visibility: hidden;}
         [data-testid="stHeader"] {display: none;}
         
-        /* Dashboard Container Styling */
+        /* White Background Container */
         .main {
-            background-color: #0e1117;
+            background-color: #ffffff !important;
         }
 
-        /* Modern Styled HTML Table */
+        /* Modern Clean Light Table */
         .clean-table-container {
             width: 100%;
             overflow-x: auto;
             margin-top: 15px;
-            border-radius: 10px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e0e0e0;
         }
 
         .clean-table {
             width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            background-color: #1e222d;
-            color: #e0e0e0;
+            border-collapse: collapse;
+            background-color: #ffffff;
+            color: #212529;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             font-size: 14px;
-            border-radius: 10px;
-            overflow: hidden;
         }
 
         .clean-table th {
-            background-color: #2b303c;
-            color: #ffffff;
+            background-color: #f1f3f5;
+            color: #111111;
             font-weight: 600;
-            padding: 14px 16px;
+            padding: 12px 14px;
             text-align: center;
-            border-bottom: 2px solid #3b4252;
+            border-bottom: 2px solid #dee2e6;
             white-space: nowrap;
         }
 
         .clean-table td {
-            padding: 12px 16px;
+            padding: 10px 14px;
             text-align: center;
-            border-bottom: 1px solid #2e3440;
+            border-bottom: 1px solid #e9ecef;
             white-space: nowrap;
         }
 
         .clean-table tr:hover {
-            background-color: #262c38;
+            background-color: #f8f9fa;
         }
 
-        /* Column Specific Text Alignments */
+        /* Column Specific Alignments */
         .clean-table td.vendor-col {
             text-align: left !important;
             font-weight: 500;
@@ -75,18 +73,18 @@ st.markdown("""
             min-width: 160px;
         }
 
-        /* Status Colors */
+        /* Status Badges */
         .badge-excess {
-            background-color: rgba(40, 167, 69, 0.2);
-            color: #2ecc71;
+            background-color: #d4edda;
+            color: #155724;
             font-weight: bold;
             padding: 4px 8px;
             border-radius: 4px;
         }
 
         .badge-short {
-            background-color: rgba(220, 53, 69, 0.2);
-            color: #e74c3c;
+            background-color: #f8d7da;
+            color: #721c24;
             font-weight: bold;
             padding: 4px 8px;
             border-radius: 4px;
@@ -249,23 +247,23 @@ if "processed_df" in st.session_state:
     html_table += "</tbody></table></div>"
     st.markdown(html_table, unsafe_allow_html=True)
 
-    # --- ULTRA HD FULL DASHBOARD CAPTURE (METRICS + TABLE) ---
-    def generate_full_dashboard_hd(df, metrics_tuple):
+    # --- ULTRA HD FULL DASHBOARD CAPTURE (WHITE BACKGROUND) ---
+    def generate_full_dashboard_hd_white(df, metrics_tuple):
         total_pos, total_po, total_pr, total_excess, total_short, total_fr = metrics_tuple
         
         # Calculate dynamic figure height based on rows
         fig_height = 3.5 + len(df) * 0.45
-        fig = plt.figure(figsize=(20, fig_height), facecolor='#0e1117')
+        fig = plt.figure(figsize=(20, fig_height), facecolor='#ffffff')
         
         # Grid Layout: Top 15% for KPIs, Bottom 85% for Table
         gs = fig.add_gridspec(2, 1, height_ratios=[1.2, len(df) * 0.45])
         
         # 1. Render Key Metrics Section
         ax_kpi = fig.add_subplot(gs[0])
-        ax_kpi.set_facecolor('#0e1117')
+        ax_kpi.set_facecolor('#ffffff')
         ax_kpi.axis('off')
         
-        ax_kpi.text(0.01, 0.8, "🎯 Key Metrics", color='white', fontsize=16, fontweight='bold')
+        ax_kpi.text(0.01, 0.8, "🎯 Key Metrics", color='#111111', fontsize=16, fontweight='bold')
         
         kpis = [
             ("Total POs", f"{total_pos:,}"),
@@ -279,17 +277,17 @@ if "processed_df" in st.session_state:
         col_width = 1.0 / len(kpis)
         for i, (label, val) in enumerate(kpis):
             x_pos = i * col_width + col_width / 2
-            # Metric Box
+            # Metric Box (White Background with Light Border)
             rect = plt.Rectangle((i * col_width + 0.01, 0.1), col_width - 0.02, 0.55, 
-                                 facecolor='#1e222d', edgecolor='#2e3440',
+                                 facecolor='#f8f9fa', edgecolor='#dee2e6',
                                  transform=ax_kpi.transAxes, zorder=2)
             ax_kpi.add_patch(rect)
-            ax_kpi.text(x_pos, 0.48, label, color='#a0a0a0', fontsize=10, ha='center', va='center')
-            ax_kpi.text(x_pos, 0.25, val, color='white', fontsize=14, fontweight='bold', ha='center', va='center')
+            ax_kpi.text(x_pos, 0.48, label, color='#555555', fontsize=10, ha='center', va='center')
+            ax_kpi.text(x_pos, 0.25, val, color='#111111', fontsize=14, fontweight='bold', ha='center', va='center')
 
         # 2. Render Full Data Table
         ax_table = fig.add_subplot(gs[1])
-        ax_table.set_facecolor('#0e1117')
+        ax_table.set_facecolor('#ffffff')
         ax_table.axis('off')
         
         table = ax_table.table(
@@ -321,38 +319,38 @@ if "processed_df" in st.session_state:
         excess_col_idx = df.columns.get_loc('Excess')
         short_col_idx = df.columns.get_loc('Short')
 
-        # Lossless Color Styling matching Dashboard Theme
+        # Color Styling for Light Theme
         for (row, col), cell in table.get_celld().items():
             if row == 0:
-                cell.set_facecolor('#2b303c')
-                cell.set_text_props(color='white', weight='bold')
+                cell.set_facecolor('#f1f3f5')
+                cell.set_text_props(color='#111111', weight='bold')
             elif row == len(df):
                 cell.set_facecolor('#f4b084')
-                cell.set_text_props(color='black', weight='bold')
+                cell.set_text_props(color='#000000', weight='bold')
             else:
-                cell.set_facecolor('#1e222d')
-                cell.set_text_props(color='#e0e0e0')
-                # Excess Highlight Badge
+                cell.set_facecolor('#ffffff')
+                cell.set_text_props(color='#212529')
+                # Excess Highlight Badge (Light Green)
                 if col == excess_col_idx and df.iloc[row - 1]['Excess'] > 0:
-                    cell.set_facecolor('#1e3a29')
-                    cell.set_text_props(color='#2ecc71', weight='bold')
-                # Short Highlight Badge
+                    cell.set_facecolor('#d4edda')
+                    cell.set_text_props(color='#155724', weight='bold')
+                # Short Highlight Badge (Light Red)
                 elif col == short_col_idx and df.iloc[row - 1]['Short'] > 0:
-                    cell.set_facecolor('#3a1e22')
-                    cell.set_text_props(color='#e74c3c', weight='bold')
+                    cell.set_facecolor('#f8d7da')
+                    cell.set_text_props(color='#721c24', weight='bold')
 
         img_buf = io.BytesIO()
         plt.tight_layout()
         # High-DPI Lossless PNG Output (300 DPI)
-        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=300, facecolor='#0e1117')
+        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=300, facecolor='#ffffff')
         plt.close(fig)
         return img_buf.getvalue()
 
     # HD Capture Download Button
     st.markdown("---")
-    hd_img_bytes = generate_full_dashboard_hd(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
+    hd_img_bytes = generate_full_dashboard_hd_white(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
     st.download_button(
-        label="📸 Capture & Download Full Dashboard (HD PNG)",
+        label="📸 Capture & Download Full Dashboard (White HD PNG)",
         data=hd_img_bytes,
         file_name="PO_PR_Full_Dashboard_HD.png",
         mime="image/png"
