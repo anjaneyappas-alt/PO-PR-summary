@@ -247,15 +247,13 @@ if "processed_df" in st.session_state:
     html_table += "</tbody></table></div>"
     st.markdown(html_table, unsafe_allow_html=True)
 
-    # --- ULTRA HD FULL DASHBOARD CAPTURE (WHITE BACKGROUND) ---
-    def generate_full_dashboard_hd_white(df, metrics_tuple):
+    # --- VECTOR PDF GENERATOR (LOSSLESS QUALITY AT ANY ZOOM) ---
+    def generate_full_dashboard_pdf(df, metrics_tuple):
         total_pos, total_po, total_pr, total_excess, total_short, total_fr = metrics_tuple
         
-        # Calculate dynamic figure height based on rows
         fig_height = 3.5 + len(df) * 0.45
         fig = plt.figure(figsize=(20, fig_height), facecolor='#ffffff')
         
-        # Grid Layout: Top 15% for KPIs, Bottom 85% for Table
         gs = fig.add_gridspec(2, 1, height_ratios=[1.2, len(df) * 0.45])
         
         # 1. Render Key Metrics Section
@@ -277,7 +275,6 @@ if "processed_df" in st.session_state:
         col_width = 1.0 / len(kpis)
         for i, (label, val) in enumerate(kpis):
             x_pos = i * col_width + col_width / 2
-            # Metric Box (White Background with Light Border)
             rect = plt.Rectangle((i * col_width + 0.01, 0.1), col_width - 0.02, 0.55, 
                                  facecolor='#f8f9fa', edgecolor='#dee2e6',
                                  transform=ax_kpi.transAxes, zorder=2)
@@ -300,7 +297,6 @@ if "processed_df" in st.session_state:
         table.set_fontsize(10)
         table.scale(1.2, 1.6)
 
-        # Full visibility column widths
         col_widths = {
             0: 0.04,  # Sl.no
             1: 0.07,  # Date
@@ -319,7 +315,6 @@ if "processed_df" in st.session_state:
         excess_col_idx = df.columns.get_loc('Excess')
         short_col_idx = df.columns.get_loc('Short')
 
-        # Color Styling for Light Theme
         for (row, col), cell in table.get_celld().items():
             if row == 0:
                 cell.set_facecolor('#f1f3f5')
@@ -330,28 +325,26 @@ if "processed_df" in st.session_state:
             else:
                 cell.set_facecolor('#ffffff')
                 cell.set_text_props(color='#212529')
-                # Excess Highlight Badge (Light Green)
                 if col == excess_col_idx and df.iloc[row - 1]['Excess'] > 0:
                     cell.set_facecolor('#d4edda')
                     cell.set_text_props(color='#155724', weight='bold')
-                # Short Highlight Badge (Light Red)
                 elif col == short_col_idx and df.iloc[row - 1]['Short'] > 0:
                     cell.set_facecolor('#f8d7da')
                     cell.set_text_props(color='#721c24', weight='bold')
 
-        img_buf = io.BytesIO()
+        pdf_buf = io.BytesIO()
         plt.tight_layout()
-        # High-DPI Lossless PNG Output (300 DPI)
-        plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=300, facecolor='#ffffff')
+        # Save directly as vector PDF format
+        plt.savefig(pdf_buf, format='pdf', bbox_inches='tight', facecolor='#ffffff')
         plt.close(fig)
-        return img_buf.getvalue()
+        return pdf_buf.getvalue()
 
-    # HD Capture Download Button
+    # Vector PDF Download Button
     st.markdown("---")
-    hd_img_bytes = generate_full_dashboard_hd_white(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
+    pdf_bytes = generate_full_dashboard_pdf(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
     st.download_button(
-        label="📸 Capture & Download Full Dashboard (White HD PNG)",
-        data=hd_img_bytes,
-        file_name="PO_PR_Full_Dashboard_HD.png",
-        mime="image/png"
+        label="📄 Download Full Dashboard as Vector PDF",
+        data=pdf_bytes,
+        file_name="PO_PR_Full_Dashboard.pdf",
+        mime="application/pdf"
     )
