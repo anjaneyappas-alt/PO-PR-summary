@@ -155,6 +155,9 @@ if show_uploaders:
                 merged = pd.merge(today_summary, po_summary, left_on='PO Number', right_on=po_num_col, how='left')
                 merged = pd.merge(merged, prior_summary, on='PO Number', how='left')
 
+                # --- SORT CHRONOLOGICALLY BY DATE (EARLIEST TO LATEST) BEFORE FORMATTING ---
+                merged = merged.sort_values(by='PR_Date', ascending=True).reset_index(drop=True)
+
                 # Format Display Columns
                 merged['Date'] = merged['PR_Date'].dt.strftime('%d-%m-%y').fillna('')
                 merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO']).fillna('')
@@ -170,6 +173,8 @@ if show_uploaders:
                 merged['Diff'] = merged['Total Received'] - merged['PO Qty']
                 merged['Excess'] = merged['Diff'].apply(lambda x: int(x) if x > 0 else 0)
                 merged['Short'] = merged['Diff'].apply(lambda x: int(x) if x < 0 else 0)  # Negative value for Short
+                
+                # Re-assign Sl.no in strictly sorted order (1, 2, 3...)
                 merged['Sl.no'] = range(1, len(merged) + 1)
 
                 # Overall KPI Metrics
