@@ -1,350 +1,357 @@
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
 import io
+from datetime import timedelta
+import pandas as pd
+import streamlit as st
 
-# Page config - Full Wide Layout
-st.set_page_config(page_title="PO vs PR Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title='PO-PR Summary', page_icon='📊', layout='wide')
 
-# Custom Clean Light Dashboard CSS (White Background)
-st.markdown("""
-    <style>
-        /* Hide default Streamlit headers, footers, and menu bars */
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
-        footer {visibility: hidden;}
-        [data-testid="stHeader"] {display: none;}
-        
-        /* White Background Container */
-        .main {
-            background-color: #ffffff !important;
-        }
+st.markdown('''
+<style>
+.block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
+[data-testid="stMetricValue"] {font-size: 1.65rem;}
+.small-note {font-size: 0.85rem; color: #666;}
+</style>
+''', unsafe_allow_html=True)
 
-        /* Modern Clean Light Table */
-        .clean-table-container {
-            width: 100%;
-            overflow-x: auto;
-            margin-top: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            border: 1px solid #e0e0e0;
-        }
+PO_COLS = [
+    'Purchase Order Number', 'Purchase Order Date', 'Purchase Order Status',
+    'Vendor Name', 'QuantityOrdered'
+]
+PR_COLS = [
+    'Receive Number', 'Receive Date', 'Vendor Name', 'PO Number',
+    'Quantity Received', 'CreatedTime', 'Status'
+]
 
-        .clean-table {
-            width: 100%;
-            border-collapse: collapse;
-            background-color: #ffffff;
-            color: #212529;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            font-size: 14px;
-        }
 
-        .clean-table th {
-            background-color: #f1f3f5;
-            color: #111111;
-            font-weight: 600;
-            padding: 12px 14px;
-            text-align: center;
-            border-bottom: 2px solid #dee2e6;
-            white-space: nowrap;
-        }
+def clean_text(s):
+    return s.astype(str).str.strip().replace({'nan': '', 'None': ''})
 
-        .clean-table td {
-            padding: 10px 14px;
-            text-align: center;
-            border-bottom: 1px solid #e9ecef;
-            white-space: nowrap;
-        }
 
-        .clean-table tr:hover {
-            background-color: #f8f9fa;
-        }
+def read_uploaded_excel(uploaded_file, sheet_name):
+    return pd.read_excel(uploaded_file, sheet_name=sheet_name)
 
-        /* Column Specific Alignments */
-        .clean-table td.vendor-col {
-            text-align: left !important;
-            font-weight: 500;
-            white-space: normal !important;
-            min-width: 220px;
-        }
 
-        .clean-table td.pr-col {
-            white-space: normal !important;
-            min-width: 160px;
-        }
+def make_summary(po_df, pr_df, include_cancelled=False):
+    missing_po = [c for c in PO_COLS if c not in po_df.columns]
+    missing_pr = [c for c in PR_COLS if c not in pr_df.columns]
+    if missing_po:
+        raise ValueError('PO file is missing columns: ' + ', '.join(missing_po))
+    if missing_pr:
+        raise ValueError('PR file is missing columns: ' + ', '.join(missing_pr))
 
-        /* Status Badges */
-        .badge-excess {
-            background-color: #d4edda;
-            color: #155724;
-            font-weight: bold;
-            padding: 4px 8px;
-            border-radius: 4px;
-        }
+    po = po_df[PO_COLS].copy()
+    pr = pr_df[PR_COLS].copy()
 
-        .badge-short {
-            background-color: #f8d7da;
-            color: #721c24;
-            font-weight: bold;
-            padding: 4px 8px;
-            border-radius: 4px;
-        }
+    for c in ['Purchase Order Number', 'Vendor Name', 'Purchase Order Status']:
+        po[c] = clean_text(po[c])
+    for c in ['PO Number', 'Vendor Name', 'Receive Number', 'Status']:
+        pr[c] = clean_text(pr[c])
 
-        .total-row td {
-            background-color: #f4b084 !important;
-            color: #000000 !important;
-            font-weight: bold !important;
-            font-size: 15px;
-            border-top: 2px solid #e08e53;
-        }
-    </style>
-""", unsafe_allow_html=True)
+    po['QuantityOrdered'] = pd.to_numeric(po['QuantityOrdered'], errors='coerce').fillna(0)
+    pr['Quantity Received'] = pd.to_numeric(pr['Quantity Received'], errors='coerce').fillna(0)
+    po['Purchase Order Date'] = pd.to_datetime(po['Purchase Order Date'], errors='coerce')
+    pr['CreatedTime'] = pd.to_datetime(pr['CreatedTime'], errors='coerce')
+    pr['Receive Date'] = pd.to_datetime(pr['Receive Date'], errors='coerce')
 
-st.title("📊 PO vs PR Dashboard")
+    # PO is an item-level export, so aggregate quantities to one row per PO.
+    if not include_cancelled:
+        po = po[po['Purchase Order Status'].str.lower().ne('cancelled')]
 
-# Toggle switch to show/hide upload inputs
-show_uploaders = st.toggle("🎚️ Show Upload Panel", value=True)
+    po['Purchase Order Number'] = po['Purchase Order Number'].str.upper()
+    pr['PO Number'] = pr['PO Number'].str.upper()
 
-if show_uploaders:
-    col1, col2 = st.columns(2)
-    with col1:
-        po_file = st.file_uploader("Upload PO Data (Excel)", type=['xlsx', 'xls'])
-    with col2:
-        pr_file = st.file_uploader("Upload PR Data (Excel)", type=['xlsx', 'xls'])
-        
-    if po_file and pr_file:
-        try:
-            with st.spinner("Processing files..."):
-                # Load raw data
-                df_po = pd.read_excel(po_file)
-                df_pr = pd.read_excel(pr_file)
-
-                # Clean column names
-                df_po.columns = df_po.columns.str.strip()
-                df_pr.columns = df_pr.columns.str.strip()
-
-                # Process PR Data
-                df_pr_clean = df_pr.dropna(subset=['PO Number']).copy()
-                pr_no_col = 'Receive Number' if 'Receive Number' in df_pr_clean.columns else 'PR Number'
-                
-                pr_summary = df_pr_clean.groupby('PO Number').agg(
-                    PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
-                    PR_Qty=('Quantity Received', 'sum'),
-                    PR_Date=('Receive Date', 'first'),
-                    Vendor_PR=('Vendor Name', 'first')
-                ).reset_index()
-
-                # Process PO Data
-                df_po_clean = df_po.dropna(subset=['Purchase Order Number']).copy()
-                po_summary = df_po_clean.groupby('Purchase Order Number').agg(
-                    PO_Qty=('QuantityOrdered', 'sum'),
-                    Vendor_PO=('Vendor Name', 'first')
-                ).reset_index()
-
-                # Merge Data
-                merged = pd.merge(pr_summary, po_summary, left_on='PO Number', right_on='Purchase Order Number', how='left')
-                
-                # Sort chronologically from earliest to latest date
-                merged['Raw_Date'] = pd.to_datetime(merged['PR_Date'], errors='coerce')
-                merged = merged.sort_values(by='Raw_Date', ascending=True).reset_index(drop=True)
-                merged['Date'] = merged['Raw_Date'].dt.strftime('%d-%m-%y')
-                
-                # Clean values
-                merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO'])
-                merged['PO Qty'] = merged['PO_Qty'].fillna(0).astype(int)
-                merged['PR Qty'] = merged['PR_Qty'].fillna(0).astype(int)
-                
-                # Excess & Short
-                merged['Diff'] = merged['PR Qty'] - merged['PO Qty']
-                merged['Excess'] = merged['Diff'].apply(lambda x: x if x > 0 else 0)
-                merged['Short'] = merged['Diff'].apply(lambda x: abs(x) if x < 0 else 0)
-                merged['Sl.no'] = range(1, len(merged) + 1)
-
-                # Totals
-                total_po = merged['PO Qty'].sum()
-                total_pr = merged['PR Qty'].sum()
-                total_excess = merged['Excess'].sum()
-                total_short = merged['Short'].sum()
-                total_fr = (total_pr / total_po * 100) if total_po > 0 else 0
-
-                # Formatted headers
-                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "Excess", "Short"]
-                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No'})
-                final_df['PO FR %'] = ((final_df['PR Qty'] / final_df['PO Qty']).fillna(0) * 100).round(0).astype(int).astype(str) + '%'
-
-                # Create Total row
-                total_row = pd.DataFrame([{
-                    "Sl.no": "",
-                    "Date": "",
-                    "PO No": "",
-                    "PR No": "",
-                    "Vendor Name": "Total",
-                    "PO Qty": total_po,
-                    "PR Qty": total_pr,
-                    "Excess": total_excess,
-                    "Short": total_short,
-                    "PO FR %": f"{int(round(total_fr))}%"
-                }])
-
-                # Append Total Row
-                final_df = pd.concat([final_df, total_row], ignore_index=True)
-
-                # Cache in Session State
-                st.session_state["processed_df"] = final_df
-                st.session_state["metrics"] = (len(merged), total_po, total_pr, total_excess, total_short, total_fr)
-
-        except Exception as e:
-            st.error(f"Error processing files: {e}")
-
-# Render Clean UI Dashboard
-if "processed_df" in st.session_state:
-    final_df = st.session_state["processed_df"]
-    total_pos, total_po, total_pr, total_excess, total_short, total_fr = st.session_state["metrics"]
-
-    # Top KPI Cards
-    st.markdown("### 🎯 Key Metrics")
-    kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
-    kpi1.metric("Total POs", f"{total_pos:,}")
-    kpi2.metric("PO Qty", f"{total_po:,}")
-    kpi3.metric("PR Qty", f"{total_pr:,}")
-    kpi4.metric("Excess Qty", f"{total_excess:,}")
-    kpi5.metric("Short Qty", f"-{total_short:,}")
-    kpi6.metric("Fill Rate", f"{total_fr:.1f}%")
-
-    st.markdown("---")
-
-    # Render HTML Clean Table
-    html_table = "<div class='clean-table-container'><table class='clean-table'><thead><tr>"
-    for col in final_df.columns:
-        html_table += f"<th>{col}</th>"
-    html_table += "</tr></thead><tbody>"
-
-    for _, row in final_df.iterrows():
-        is_total = row['Vendor Name'] == 'Total'
-        tr_class = "class='total-row'" if is_total else ""
-        html_table += f"<tr {tr_class}>"
-        
-        for col in final_df.columns:
-            val = row[col]
-            td_class = ""
-            
-            if col == "Vendor Name":
-                td_class = "class='vendor-col'"
-            elif col == "PR No":
-                td_class = "class='pr-col'"
-            
-            # Badges for Excess / Short
-            if not is_total and col == "Excess" and isinstance(val, (int, float)) and val > 0:
-                val_str = f"<span class='badge-excess'>+{val}</span>"
-            elif not is_total and col == "Short" and isinstance(val, (int, float)) and val > 0:
-                val_str = f"<span class='badge-short'>-{val}</span>"
-            else:
-                val_str = str(val)
-                
-            html_table += f"<td {td_class}>{val_str}</td>"
-        html_table += "</tr>"
-
-    html_table += "</tbody></table></div>"
-    st.markdown(html_table, unsafe_allow_html=True)
-
-    # --- VECTOR PDF GENERATOR (LOSSLESS QUALITY AT ANY ZOOM) ---
-    def generate_full_dashboard_pdf(df, metrics_tuple):
-        total_pos, total_po, total_pr, total_excess, total_short, total_fr = metrics_tuple
-        
-        fig_height = 3.5 + len(df) * 0.45
-        fig = plt.figure(figsize=(20, fig_height), facecolor='#ffffff')
-        
-        gs = fig.add_gridspec(2, 1, height_ratios=[1.2, len(df) * 0.45])
-        
-        # 1. Render Key Metrics Section
-        ax_kpi = fig.add_subplot(gs[0])
-        ax_kpi.set_facecolor('#ffffff')
-        ax_kpi.axis('off')
-        
-        ax_kpi.text(0.01, 0.8, "🎯 Key Metrics", color='#111111', fontsize=16, fontweight='bold')
-        
-        kpis = [
-            ("Total POs", f"{total_pos:,}"),
-            ("PO Qty", f"{total_po:,}"),
-            ("PR Qty", f"{total_pr:,}"),
-            ("Excess Qty", f"{total_excess:,}"),
-            ("Short Qty", f"-{total_short:,}"),
-            ("Fill Rate", f"{total_fr:.1f}%")
-        ]
-        
-        col_width = 1.0 / len(kpis)
-        for i, (label, val) in enumerate(kpis):
-            x_pos = i * col_width + col_width / 2
-            rect = plt.Rectangle((i * col_width + 0.01, 0.1), col_width - 0.02, 0.55, 
-                                 facecolor='#f8f9fa', edgecolor='#dee2e6',
-                                 transform=ax_kpi.transAxes, zorder=2)
-            ax_kpi.add_patch(rect)
-            ax_kpi.text(x_pos, 0.48, label, color='#555555', fontsize=10, ha='center', va='center')
-            ax_kpi.text(x_pos, 0.25, val, color='#111111', fontsize=14, fontweight='bold', ha='center', va='center')
-
-        # 2. Render Full Data Table
-        ax_table = fig.add_subplot(gs[1])
-        ax_table.set_facecolor('#ffffff')
-        ax_table.axis('off')
-        
-        table = ax_table.table(
-            cellText=df.values,
-            colLabels=df.columns,
-            cellLoc='center',
-            loc='upper center'
-        )
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1.2, 1.6)
-
-        col_widths = {
-            0: 0.04,  # Sl.no
-            1: 0.07,  # Date
-            2: 0.09,  # PO No
-            3: 0.13,  # PR No
-            4: 0.27,  # Vendor Name
-            5: 0.07,  # PO Qty
-            6: 0.07,  # PR Qty
-            7: 0.07,  # Excess
-            8: 0.07,  # Short
-            9: 0.07   # PO FR %
-        }
-        for (row, col), cell in table.get_celld().items():
-            cell.set_width(col_widths.get(col, 0.1))
-
-        excess_col_idx = df.columns.get_loc('Excess')
-        short_col_idx = df.columns.get_loc('Short')
-
-        for (row, col), cell in table.get_celld().items():
-            if row == 0:
-                cell.set_facecolor('#f1f3f5')
-                cell.set_text_props(color='#111111', weight='bold')
-            elif row == len(df):
-                cell.set_facecolor('#f4b084')
-                cell.set_text_props(color='#000000', weight='bold')
-            else:
-                cell.set_facecolor('#ffffff')
-                cell.set_text_props(color='#212529')
-                if col == excess_col_idx and df.iloc[row - 1]['Excess'] > 0:
-                    cell.set_facecolor('#d4edda')
-                    cell.set_text_props(color='#155724', weight='bold')
-                elif col == short_col_idx and df.iloc[row - 1]['Short'] > 0:
-                    cell.set_facecolor('#f8d7da')
-                    cell.set_text_props(color='#721c24', weight='bold')
-
-        pdf_buf = io.BytesIO()
-        plt.tight_layout()
-        # Save directly as vector PDF format
-        plt.savefig(pdf_buf, format='pdf', bbox_inches='tight', facecolor='#ffffff')
-        plt.close(fig)
-        return pdf_buf.getvalue()
-
-    # Vector PDF Download Button
-    st.markdown("---")
-    pdf_bytes = generate_full_dashboard_pdf(final_df, (total_pos, total_po, total_pr, total_excess, total_short, total_fr))
-    st.download_button(
-        label="📄 Download Full Dashboard as Vector PDF",
-        data=pdf_bytes,
-        file_name="PO_PR_Full_Dashboard.pdf",
-        mime="application/pdf"
+    po_group = (
+        po.groupby('Purchase Order Number', as_index=False)
+          .agg({
+              'Purchase Order Date': 'min',
+              'Vendor Name': 'first',
+              'QuantityOrdered': 'sum'
+          })
+          .rename(columns={'QuantityOrdered': 'PO Qty'})
     )
+
+    # The latest CreatedTime in the uploaded PR data is the report reference time.
+    # Current PR = CreatedTime in the last 15 hours; PR MTD = older PRs in the upload.
+    valid_times = pr['CreatedTime'].dropna()
+    if valid_times.empty:
+        raise ValueError('No valid CreatedTime values were found in the PR file.')
+    report_time = valid_times.max()
+    cutoff = report_time - timedelta(hours=15)
+
+    recent = pr[pr['CreatedTime'].ge(cutoff)].copy()
+    old = pr[pr['CreatedTime'].lt(cutoff)].copy()
+
+    recent_qty = recent.groupby('PO Number')['Quantity Received'].sum().rename('PR Qty')
+    old_qty = old.groupby('PO Number')['Quantity Received'].sum().rename('PR MTD')
+
+    recent_nos = recent.groupby('PO Number')['Receive Number'].apply(
+        lambda x: ', '.join(pd.unique(x[x.ne('')].astype(str)))
+    ).rename('PR No Recent')
+    old_nos = old.groupby('PO Number')['Receive Number'].apply(
+        lambda x: ', '.join(pd.unique(x[x.ne('')].astype(str)))
+    ).rename('PR No MTD')
+
+    # Use all PR records in the uploaded month for total fulfillment calculations.
+    total_pr = (old_qty.add(recent_qty, fill_value=0)).rename('Total PR Qty')
+
+    out = po_group.merge(old_qty, left_on='Purchase Order Number', right_index=True, how='left')
+    out = out.merge(recent_qty, left_on='Purchase Order Number', right_index=True, how='left')
+    out = out.merge(total_pr, left_on='Purchase Order Number', right_index=True, how='left')
+    out = out.merge(recent_nos, left_on='Purchase Order Number', right_index=True, how='left')
+    out = out.merge(old_nos, left_on='Purchase Order Number', right_index=True, how='left')
+
+    for c in ['PR MTD', 'PR Qty', 'Total PR Qty']:
+        out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0)
+
+    out['Excess'] = (out['Total PR Qty'] - out['PO Qty']).clip(lower=0)
+    out['Short'] = (out['PO Qty'] - out['Total PR Qty']).clip(lower=0)
+    out['PO FR %'] = out.apply(
+        lambda r: (r['Total PR Qty'] / r['PO Qty'] * 100) if r['PO Qty'] else 0,
+        axis=1
+    )
+
+    # Display order matching the PDF, with PR MTD before PR Qty.
+    out = out.rename(columns={
+        'Purchase Order Date': 'Date',
+        'Purchase Order Number': 'PO No',
+        'Vendor Name': 'Vendor Name'
+    })
+    out.insert(0, 'Sl.No', range(1, len(out) + 1))
+
+    # Show PR numbers from both buckets. MTD first because it represents older activity.
+    def combine_pr(a, b):
+        vals = []
+        for x in [a, b]:
+            if pd.notna(x) and str(x).strip():
+                vals.extend([v.strip() for v in str(x).split(',') if v.strip()])
+        return ' & '.join(pd.unique(vals))
+
+    out['PR No'] = [combine_pr(a, b) for a, b in zip(out['PR No MTD'], out['PR No Recent'])]
+    out['Date'] = pd.to_datetime(out['Date'], errors='coerce')
+    out['Date'] = out['Date'].dt.strftime('%d-%m-%y')
+
+    display = out[[
+        'Sl.No', 'Date', 'PO No', 'PR No', 'Vendor Name',
+        'PO Qty', 'PR MTD', 'PR Qty', 'Excess', 'Short', 'PO FR %'
+    ]].copy()
+
+    # Keep integer-looking quantities clean.
+    for c in ['PO Qty', 'PR MTD', 'PR Qty', 'Excess', 'Short']:
+        display[c] = display[c].round(3)
+
+    meta = {
+        'report_time': report_time,
+        'cutoff': cutoff,
+        'recent_rows': len(recent),
+        'old_rows': len(old),
+        'recent_qty': recent['Quantity Received'].sum(),
+        'old_qty': old['Quantity Received'].sum(),
+        'total_po_qty': display['PO Qty'].sum(),
+        'total_pr_mtd': display['PR MTD'].sum(),
+        'total_pr_qty': display['PR Qty'].sum(),
+        'total_excess': display['Excess'].sum(),
+        'total_short': display['Short'].sum(),
+        'fill_rate': (display['PR MTD'].sum() + display['PR Qty'].sum()) / display['PO Qty'].sum() * 100 if display['PO Qty'].sum() else 0,
+    }
+    return display, meta
+
+
+def excel_download(df, meta):
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        summary = pd.DataFrame({
+            'Metric': ['Total POs', 'PO Qty', 'PR MTD', 'PR Qty', 'Excess Qty', 'Short Qty', 'Fill Rate'],
+            'Value': [len(df), meta['total_po_qty'], meta['total_pr_mtd'], meta['total_pr_qty'],
+                      meta['total_excess'], meta['total_short'], meta['fill_rate'] / 100]
+        })
+        summary.to_excel(writer, sheet_name='Summary', index=False, startrow=1)
+        df.to_excel(writer, sheet_name='Summary', index=False, startrow=10)
+
+    buffer.seek(0)
+    wb = load_workbook(buffer)
+    ws = wb['Summary']
+
+    ws['A1'] = 'PO / PR SUMMARY'
+    ws['A1'].font = Font(size=16, bold=True)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=11)
+    ws['A9'] = 'PO / PR Details'
+    ws['A9'].font = Font(size=12, bold=True)
+
+    header_fill = PatternFill('solid', fgColor='1F4E78')
+    header_font = Font(color='FFFFFF', bold=True)
+    thin = Side(style='thin', color='D9E1F2')
+
+    for row in [2, 11]:
+        for cell in ws[row]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = Border(bottom=thin)
+
+    for row in ws.iter_rows(min_row=12, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(vertical='top', wrap_text=True)
+
+    # Fill-rate metric and detail percentage formatting.
+    ws['B8'] = meta['fill_rate'] / 100
+    ws['B8'].number_format = '0.0%'
+    for cell in ws['K'][10:]:
+        cell.number_format = '0.0%'
+
+    widths = {1: 8, 2: 12, 3: 18, 4: 30, 5: 38, 6: 12, 7: 12, 8: 12, 9: 12, 10: 12, 11: 12}
+    for col, width in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = 'A12'
+    ws.auto_filter.ref = f'A11:K{ws.max_row}'
+
+    final = io.BytesIO()
+    wb.save(final)
+    final.seek(0)
+    return final.getvalue()
+
+
+def pdf_download(df, meta):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=7*mm, leftMargin=7*mm, topMargin=8*mm, bottomMargin=8*mm)
+    styles = getSampleStyleSheet()
+    elements = [Paragraph('PO / PR SUMMARY', styles['Title'])]
+    elements.append(Paragraph(
+        f"Report time: {meta['report_time']:%d-%m-%Y %H:%M} | Current PR window: {meta['cutoff']:%d-%m-%Y %H:%M} to {meta['report_time']:%d-%m-%Y %H:%M}",
+        styles['Normal']))
+    elements.append(Spacer(1, 4*mm))
+
+    metrics = [[
+        'Total POs', 'PO Qty', 'PR MTD', 'PR Qty', 'Excess Qty', 'Short Qty', 'Fill Rate'
+    ], [
+        f"{len(df):,}", f"{meta['total_po_qty']:,.0f}", f"{meta['total_pr_mtd']:,.0f}",
+        f"{meta['total_pr_qty']:,.0f}", f"{meta['total_excess']:,.0f}", f"{meta['total_short']:,.0f}",
+        f"{meta['fill_rate']:.1f}%"
+    ]]
+    mt = Table(metrics, colWidths=[35*mm]*7)
+    mt.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1F4E78')),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('GRID',(0,0),(-1,-1),0.4,colors.grey),
+        ('FONTSIZE',(0,0),(-1,-1),8),
+        ('BOTTOMPADDING',(0,0),(-1,-1),5),
+        ('TOPPADDING',(0,0),(-1,-1),5),
+    ]))
+    elements.append(mt)
+    elements.append(Spacer(1, 5*mm))
+
+    headers = list(df.columns)
+    rows = [headers]
+    for _, r in df.iterrows():
+        rows.append([
+            str(r['Sl.No']), str(r['Date']), str(r['PO No']), str(r['PR No']),
+            str(r['Vendor Name']), f"{r['PO Qty']:,.0f}", f"{r['PR MTD']:,.0f}",
+            f"{r['PR Qty']:,.0f}", f"{r['Excess']:,.0f}", f"{r['Short']:,.0f}",
+            f"{r['PO FR %']:.1f}%"
+        ])
+
+    widths = [10*mm, 18*mm, 29*mm, 35*mm, 48*mm, 17*mm, 17*mm, 17*mm, 17*mm, 17*mm, 18*mm]
+    table = Table(rows, repeatRows=1, colWidths=widths)
+    table.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1F4E78')),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.white),
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,-1),6.5),
+        ('GRID',(0,0),(-1,-1),0.25,colors.HexColor('#B7C9D6')),
+        ('VALIGN',(0,0),(-1,-1),'TOP'),
+        ('ALIGN',(0,0),(0,-1),'CENTER'),
+        ('ALIGN',(5,1),(-1,-1),'RIGHT'),
+        ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white, colors.HexColor('#F5F8FA')]),
+        ('LEFTPADDING',(0,0),(-1,-1),2), ('RIGHTPADDING',(0,0),(-1,-1),2),
+        ('TOPPADDING',(0,0),(-1,-1),2), ('BOTTOMPADDING',(0,0),(-1,-1),2),
+    ]))
+    elements.append(table)
+    doc.build(elements)
+    return buffer.getvalue()
+
+
+st.title('📊 PO / PR Summary Dashboard')
+st.caption('Upload the daily PO and PR raw Excel exports. The report automatically separates PR activity into PR MTD and the latest 15-hour PR window.')
+
+with st.sidebar:
+    st.header('Upload data')
+    po_file = st.file_uploader('PO Raw Excel', type=['xlsx', 'xls'], key='po')
+    pr_file = st.file_uploader('PR Raw Excel', type=['xlsx', 'xls'], key='pr')
+    st.divider()
+    include_cancelled = st.checkbox('Include cancelled POs', value=False)
+    st.info('15-hour cutoff is calculated from the latest valid PR CreatedTime in the uploaded PR file.')
+
+if not po_file or not pr_file:
+    st.info('Upload both PO Raw Excel and PR Raw Excel to generate the summary.')
+    st.stop()
+
+try:
+    po_raw = read_uploaded_excel(po_file, 'PurchaseOrder')
+    pr_raw = read_uploaded_excel(pr_file, 'PurchaseReceive')
+    summary, meta = make_summary(po_raw, pr_raw, include_cancelled=include_cancelled)
+except Exception as e:
+    st.error(f'Could not process the files: {e}')
+    st.stop()
+
+st.success(f"Processed {len(summary):,} POs. PR cutoff: {meta['cutoff']:%d-%m-%Y %H:%M}")
+
+c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
+c1.metric('Total POs', f"{len(summary):,}")
+c2.metric('PO Qty', f"{meta['total_po_qty']:,.0f}")
+c3.metric('PR MTD', f"{meta['total_pr_mtd']:,.0f}")
+c4.metric('PR Qty', f"{meta['total_pr_qty']:,.0f}")
+c5.metric('Excess Qty', f"{meta['total_excess']:,.0f}")
+c6.metric('Short Qty', f"{meta['total_short']:,.0f}")
+c7.metric('Fill Rate', f"{meta['fill_rate']:.1f}%")
+
+st.subheader('PO / PR Details')
+st.dataframe(
+    summary,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        'PO FR %': st.column_config.NumberColumn('PO FR %', format='%.1f%%'),
+        'PO Qty': st.column_config.NumberColumn('PO Qty', format='%.0f'),
+        'PR MTD': st.column_config.NumberColumn('PR MTD', format='%.0f'),
+        'PR Qty': st.column_config.NumberColumn('PR Qty', format='%.0f'),
+        'Excess': st.column_config.NumberColumn('Excess', format='%.0f'),
+        'Short': st.column_config.NumberColumn('Short', format='%.0f'),
+    },
+)
+
+st.divider()
+st.subheader('Download Summary')
+col1, col2 = st.columns(2)
+with col1:
+    st.download_button(
+        '⬇️ Download Clean Excel Summary',
+        data=excel_download(summary, meta),
+        file_name=f"PO_PR_Summary_{meta['report_time']:%Y-%m-%d_%H%M}.xlsx",
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        use_container_width=True,
+    )
+with col2:
+    st.download_button(
+        '⬇️ Download Clean PDF Summary',
+        data=pdf_download(summary, meta),
+        file_name=f"PO_PR_Summary_{meta['report_time']:%Y-%m-%d_%H%M}.pdf",
+        mime='application/pdf',
+        use_container_width=True,
+    )
+
+st.caption(
+    f"PR MTD includes PRs older than 15 hours within the uploaded PR data. "
+    f"Current PR Qty includes PRs from {meta['cutoff']:%d-%m-%Y %H:%M} onward. "
+    f"Total fulfillment = PR MTD + PR Qty."
+)
