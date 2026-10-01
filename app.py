@@ -1,784 +1,263 @@
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
-from io import BytesIO
-
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from openpyxl.worksheet.table import Table, TableStyleInfo
-
-# =========================================================
-# PAGE
-# =========================================================
-
-st.set_page_config(
-    page_title="PO PR Summary",
-    page_icon="📊",
-    layout="wide"
-)
-
-st.title("📊 PO / PR Summary")
-
-# =========================================================
-# CLEANING FUNCTIONS
-# =========================================================
-
-def clean_text(series):
-    return (
-        series.fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-
-def prepare_po(df):
-    df = df.copy()
-    df.columns = df.columns.astype(str).str.strip()
-
-    required = [
-        "Purchase Order Number",
-        "Purchase Order Date",
-        "Purchase Order Status",
-        "Vendor Name",
-        "QuantityOrdered"
-    ]
-
-    missing = [x for x in required if x not in df.columns]
-
-    if missing:
-        raise Exception(
-            "PO file missing columns: " + ", ".join(missing)
-        )
-
-    df["Purchase Order Number"] = clean_text(
-        df["Purchase Order Number"]
-    )
-
-    df["Vendor Name"] = clean_text(
-        df["Vendor Name"]
-    )
-
-    df["Purchase Order Status"] = clean_text(
-        df["Purchase Order Status"]
-    )
-
-    df["Purchase Order Date"] = pd.to_datetime(
-        df["Purchase Order Date"],
-        errors="coerce"
-    )
-
-    df["QuantityOrdered"] = pd.to_numeric(
-        df["QuantityOrdered"],
-        errors="coerce"
-    ).fillna(0)
-
-    return df
-
-
-def prepare_pr(df):
-    df = df.copy()
-    df.columns = df.columns.astype(str).str.strip()
-
-    required = [
-        "Receive Number",
-        "Receive Date",
-        "Vendor Name",
-        "PO Number",
-        "Quantity Received",
-        "CreatedTime",
-        "Status"
-    ]
-
-    missing = [x for x in required if x not in df.columns]
-
-    if missing:
-        raise Exception(
-            "PR file missing columns: " + ", ".join(missing)
-        )
-
-    df["PO Number"] = clean_text(df["PO Number"])
-
-    df["Receive Number"] = clean_text(
-        df["Receive Number"]
-    )
-
-    df["Vendor Name"] = clean_text(
-        df["Vendor Name"]
-    )
-
-    df["Quantity Received"] = pd.to_numeric(
-        df["Quantity Received"],
-        errors="coerce"
-    ).fillna(0)
-
-    df["CreatedTime"] = pd.to_datetime(
-        df["CreatedTime"],
-        errors="coerce"
-    )
-
-    df["Receive Date"] = pd.to_datetime(
-        df["Receive Date"],
-        errors="coerce"
-    )
-
-    df["Status"] = clean_text(df["Status"])
-
-    return df
-
-
-# =========================================================
-# PO SUMMARY
-# =========================================================
-
-def create_po_summary(po, include_cancelled):
-
-    if not include_cancelled:
-
-        status = (
-            po["Purchase Order Status"]
-            .str.lower()
-            .str.strip()
-        )
-
-        po = po[
-            ~status.str.contains(
-                "cancel",
-                na=False
-            )
-        ].copy()
-
-    summary = (
-        po.groupby(
-            "Purchase Order Number",
-            as_index=False
-        )
-        .agg({
-            "Purchase Order Date": "min",
-            "Vendor Name": "first",
-            "QuantityOrdered": "sum"
-        })
-    )
-
-    summary.rename(
-        columns={
-            "Purchase Order Number": "PO No",
-            "Purchase Order Date": "Date",
-            "QuantityOrdered": "PO Qty"
-        },
-        inplace=True
-    )
-
-    return summary
-
-
-# =========================================================
-# PR CALCULATION
-# =========================================================
-
-def calculate_pr(pr):
-
-    """
-    FOR EACH PO:
-
-    1. Find the latest CreatedTime for that PO.
-    2. Go back exactly 15 hours.
-    3. PR Qty = PRs created within those 15 hours.
-    4. PR MTD = PRs created before that 15-hour cutoff.
-
-    PR MTD is NOT added to PR Qty.
-    """
-
-    rows = []
-
-    pr = pr[
-        (pr["PO Number"] != "") &
-        (pr["CreatedTime"].notna())
-    ].copy()
-
-    for po_no, group in pr.groupby(
-        "PO Number",
-        sort=False
-    ):
-
-        group = group.sort_values(
-            "CreatedTime"
-        ).copy()
-
-        # ---------------------------------------------
-        # Latest PR time FOR THIS PO
-        # ---------------------------------------------
-
-        latest_time = group["CreatedTime"].max()
-
-        # ---------------------------------------------
-        # 15 HOURS BEFORE LATEST PR
-        # ---------------------------------------------
-
-        cutoff = latest_time - timedelta(hours=15)
-
-        # ---------------------------------------------
-        # PR WITHIN 15 HOURS
-        # ---------------------------------------------
-
-        recent = group[
-            group["CreatedTime"] >= cutoff
-        ].copy()
-
-        # ---------------------------------------------
-        # PR OLDER THAN 15 HOURS
-        # ---------------------------------------------
-
-        old = group[
-            group["CreatedTime"] < cutoff
-        ].copy()
-
-        # ---------------------------------------------
-        # QUANTITIES
-        # ---------------------------------------------
-
-        pr_qty = recent["Quantity Received"].sum()
-
-        pr_mtd = old["Quantity Received"].sum()
-
-        # ---------------------------------------------
-        # RECENT PR NUMBERS
-        # ---------------------------------------------
-
-        pr_numbers = list(
-            dict.fromkeys(
-                recent["Receive Number"]
-                .dropna()
-                .astype(str)
-                .str.strip()
-                .tolist()
-            )
-        )
-
-        rows.append({
-            "PO No": po_no,
-            "PR No": ", ".join(pr_numbers),
-            "PR MTD": pr_mtd,
-            "PR Qty": pr_qty
-        })
-
-    return pd.DataFrame(rows)
-
-
-# =========================================================
-# FINAL REPORT
-# =========================================================
-
-def create_report(po, pr, include_cancelled):
-
-    po_summary = create_po_summary(
-        po,
-        include_cancelled
-    )
-
-    pr_summary = calculate_pr(pr)
-
-    result = po_summary.merge(
-        pr_summary,
-        on="PO No",
-        how="left"
-    )
-
-    result["PR No"] = result["PR No"].fillna("")
-
-    result["PR MTD"] = result["PR MTD"].fillna(0)
-
-    result["PR Qty"] = result["PR Qty"].fillna(0)
-
-    # =====================================================
-    # EXCESS
-    # ONLY PR QTY
-    # =====================================================
-
-    result["Excess"] = (
-        result["PR Qty"] -
-        result["PO Qty"]
-    ).clip(lower=0)
-
-    # =====================================================
-    # SHORT
-    # ONLY PR QTY
-    # =====================================================
-
-    result["Short"] = (
-        result["PO Qty"] -
-        result["PR Qty"]
-    ).clip(lower=0)
-
-    # =====================================================
-    # FILL RATE
-    # ONLY PR QTY
-    # =====================================================
-
-    result["PO FR %"] = 0.0
-
-    mask = result["PO Qty"] > 0
-
-    result.loc[mask, "PO FR %"] = (
-        result.loc[mask, "PR Qty"]
-        /
-        result.loc[mask, "PO Qty"]
-        * 100
-    )
-
-    # =====================================================
-    # SERIAL NUMBER
-    # =====================================================
-
-    result.insert(
-        0,
-        "Sl.No",
-        range(1, len(result) + 1)
-    )
-
-    # =====================================================
-    # COLUMN ORDER
-    # =====================================================
-
-    result = result[
-        [
-            "Sl.No",
-            "Date",
-            "PO No",
-            "PR No",
-            "Vendor Name",
-            "PO Qty",
-            "PR MTD",
-            "PR Qty",
-            "Excess",
-            "Short",
-            "PO FR %"
-        ]
-    ]
-
-    return result
-
-
-# =========================================================
-# EXCEL FILE
-# =========================================================
-
-def make_excel(df):
-
-    output = BytesIO()
-
-    with pd.ExcelWriter(
-        output,
-        engine="openpyxl"
-    ) as writer:
-
-        df.to_excel(
-            writer,
-            sheet_name="PO PR Summary",
-            index=False,
-            startrow=3
-        )
-
-        ws = writer.sheets["PO PR Summary"]
-
-        # =================================================
-        # TITLE
-        # =================================================
-
-        ws["A1"] = "PO / PR SUMMARY"
-
-        ws["A1"].font = Font(
-            bold=True,
-            size=18
-        )
-
-        ws.merge_cells(
-            start_row=1,
-            start_column=1,
-            end_row=1,
-            end_column=11
-        )
-
-        ws["A1"].alignment = Alignment(
-            horizontal="center"
-        )
-
-        # =================================================
-        # DESCRIPTION
-        # =================================================
-
-        ws["A2"] = (
-            "PR Qty = latest 15 hours for each PO | "
-            "PR MTD = older PR quantity for the same PO"
-        )
-
-        ws.merge_cells(
-            start_row=2,
-            start_column=1,
-            end_row=2,
-            end_column=11
-        )
-
-        ws["A2"].alignment = Alignment(
-            horizontal="center"
-        )
-
-        ws["A2"].font = Font(
-            italic=True,
-            size=10
-        )
-
-        # =================================================
-        # HEADER
-        # =================================================
-
-        header_row = 4
-
-        fill = PatternFill(
-            fill_type="solid",
-            fgColor="1F4E78"
-        )
-
-        font = Font(
-            bold=True,
-            color="FFFFFF"
-        )
-
-        thin = Side(
-            style="thin",
-            color="B7B7B7"
-        )
-
-        border = Border(
-            left=thin,
-            right=thin,
-            top=thin,
-            bottom=thin
-        )
-
-        for cell in ws[header_row]:
-
-            cell.fill = fill
-            cell.font = font
-            cell.border = border
-
-            cell.alignment = Alignment(
-                horizontal="center",
-                vertical="center"
-            )
-
-        # =================================================
-        # DATA
-        # =================================================
-
-        start = 5
-        end = start + len(df) - 1
-
-        for row in ws.iter_rows(
-            min_row=start,
-            max_row=end,
-            min_col=1,
-            max_col=11
-        ):
-
-            for cell in row:
-
-                cell.border = border
-
-                cell.alignment = Alignment(
-                    vertical="center"
-                )
-
-        # =================================================
-        # NUMBER FORMATS
-        # =================================================
-
-        for row in range(start, end + 1):
-
-            # PO Qty / PR MTD / PR Qty /
-            # Excess / Short
-            for col in [6, 7, 8, 9, 10]:
-
-                ws.cell(
-                    row=row,
-                    column=col
-                ).number_format = '#,##0.00'
-
-            # Fill Rate
-            ws.cell(
-                row=row,
-                column=11
-            ).number_format = '0.00"%"'
-
-        # =================================================
-        # DATE FORMAT
-        # =================================================
-
-        for row in range(start, end + 1):
-
-            ws.cell(
-                row=row,
-                column=2
-            ).number_format = "dd-mm-yyyy"
-
-        # =================================================
-        # CENTER NUMBERS
-        # =================================================
-
-        for row in range(start, end + 1):
-
-            for col in [
-                1, 2, 6, 7, 8, 9, 10, 11
-            ]:
-
-                ws.cell(
-                    row=row,
-                    column=col
-                ).alignment = Alignment(
-                    horizontal="center",
-                    vertical="center"
-                )
-
-        # =================================================
-        # FREEZE
-        # =================================================
-
-        ws.freeze_panes = "A5"
-
-        # =================================================
-        # FILTER
-        # =================================================
-
-        ws.auto_filter.ref = (
-            f"A4:K{end}"
-        )
-
-        # =================================================
-        # TABLE
-        # =================================================
-
-        if len(df) > 0:
-
-            table = Table(
-                displayName="POPRSummary",
-                ref=f"A4:K{end}"
-            )
-
-            table_style = TableStyleInfo(
-                name="TableStyleMedium2",
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=True,
-                showColumnStripes=False
-            )
-
-            table.tableStyleInfo = table_style
-
-            ws.add_table(table)
-
-        # =================================================
-        # COLUMN WIDTH
-        # =================================================
-
-        widths = {
-            "A": 9,
-            "B": 14,
-            "C": 20,
-            "D": 30,
-            "E": 30,
-            "F": 14,
-            "G": 14,
-            "H": 14,
-            "I": 14,
-            "J": 14,
-            "K": 14
+import numpy as np
+import io
+
+# Page config - Standard Excel Wide Layout
+st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
+
+# Excel Grid Styling
+st.markdown("""
+    <style>
+        /* Hide default Streamlit headers and footers */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        [data-testid="stHeader"] {display: none;}
+        
+        /* White Background Container */
+        .main {
+            background-color: #ffffff !important;
         }
 
-        for col, width in widths.items():
+        /* KPI Top Metric Cards */
+        [data-testid="stMetricValue"] {
+            font-size: 20px !important;
+            font-weight: bold !important;
+            color: #111111 !important;
+        }
+        
+        [data-testid="stMetricLabel"] {
+            font-size: 13px !important;
+            color: #555555 !important;
+        }
 
-            ws.column_dimensions[col].width = width
+        .stTable {
+            background-color: #ffffff !important;
+            font-family: "Segoe UI", Arial, sans-serif !important;
+            font-size: 13px !important;
+            color: #000000 !important;
+        }
+        
+        .stTable table {
+            border-collapse: collapse !important;
+            width: 100% !important;
+            border: 1px solid #d9d9d9 !important;
+        }
+        
+        /* Excel Table Headers */
+        .stTable th {
+            background-color: #e6e6e6 !important;
+            color: #000000 !important;
+            font-weight: bold !important;
+            text-align: center !important;
+            border: 1px solid #bfbfbf !important;
+            padding: 6px 10px !important;
+            white-space: nowrap !important;
+        }
+        
+        /* Excel Data Cells & Gridlines */
+        .stTable td {
+            border: 1px solid #d9d9d9 !important;
+            padding: 6px 10px !important;
+            color: #000000 !important;
+            white-space: nowrap !important;
+        }
+        
+        /* Zebra Striping */
+        .stTable tr:nth-child(even) {
+            background-color: #f9f9f9 !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-        ws.row_dimensions[1].height = 30
-        ws.row_dimensions[4].height = 25
+st.title("📊 PO vs PR Excel View")
 
-    output.seek(0)
+# Toggle panel to hide uploaders
+show_uploaders = st.toggle("🎚️️ Show Upload Panel", value=True)
 
-    return output
+if show_uploaders:
+    col1, col2 = st.columns(2)
+    with col1:
+        po_file = st.file_uploader("Upload PO Monthly Data (Excel)", type=['xlsx', 'xls'])
+    with col2:
+        pr_file = st.file_uploader("Upload PR Monthly Data (Excel)", type=['xlsx', 'xls'])
+        
+    if po_file and pr_file:
+        try:
+            with st.spinner("Processing monthly data..."):
+                # Load raw datasets
+                df_po = pd.read_excel(po_file)
+                df_pr = pd.read_excel(pr_file)
 
+                # Strip whitespace from headers
+                df_po.columns = df_po.columns.str.strip()
+                df_pr.columns = df_pr.columns.str.strip()
 
-# =========================================================
-# UPLOAD
-# =========================================================
+                # Dynamic Column Name Identification
+                po_num_col = 'Purchase Order Number' if 'Purchase Order Number' in df_po.columns else ('PO Number' if 'PO Number' in df_po.columns else 'Purchase Order ID')
+                po_qty_col = 'QuantityOrdered' if 'QuantityOrdered' in df_po.columns else ('TotalQuantityOrdered' if 'TotalQuantityOrdered' in df_po.columns else 'Quantity')
 
-st.subheader("Upload Raw Files")
+                pr_no_col = 'Receive Number' if 'Receive Number' in df_pr.columns else ('PR Number' if 'PR Number' in df_pr.columns else 'Purchase Receive ID')
+                date_col = 'Receive Date' if 'Receive Date' in df_pr.columns else ('CreatedTime' if 'CreatedTime' in df_pr.columns else 'PR Date')
+                qty_pr_col = 'Quantity Received' if 'Quantity Received' in df_pr.columns else 'Quantity'
 
-col1, col2 = st.columns(2)
+                # Clean PR Data
+                df_pr_clean = df_pr.dropna(subset=['PO Number']).copy()
+                df_pr_clean['Clean_PR_Qty'] = pd.to_numeric(df_pr_clean[qty_pr_col], errors='coerce').fillna(0)
+                
+                # Combine Date and Time into datetime object
+                df_pr_clean['DT'] = pd.to_datetime(df_pr_clean[date_col], errors='coerce')
+                
+                # Dynamic 15-Hour Window Calculation
+                max_time = df_pr_clean['DT'].max()
+                if pd.notna(max_time):
+                    cutoff_time = max_time - pd.Timedelta(hours=15)
+                    df_today = df_pr_clean[df_pr_clean['DT'] >= cutoff_time]
+                    df_prior = df_pr_clean[df_pr_clean['DT'] < cutoff_time]
+                else:
+                    df_today = df_pr_clean
+                    df_prior = pd.DataFrame(columns=df_pr_clean.columns)
 
-with col1:
+                # Group 1: Today's PR Data (Last 15 Hours)
+                today_summary = df_today.groupby('PO Number').agg(
+                    PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
+                    PR_Qty=('Clean_PR_Qty', 'sum'),
+                    PR_Date=('DT', 'max'),
+                    Vendor_PR=('Vendor Name', 'first')
+                ).reset_index()
 
-    po_file = st.file_uploader(
-        "PO Raw Excel",
-        type=["xlsx", "xls"]
-    )
+                # Group 2: PRMTD Data (Before 15 Hours for the same PO)
+                prior_summary = df_prior.groupby('PO Number').agg(
+                    PRMTD=('Clean_PR_Qty', 'sum')
+                ).reset_index()
 
-with col2:
+                # Group 3: PO Monthly Data
+                df_po_clean = df_po.dropna(subset=[po_num_col]).copy()
+                df_po_clean['Clean_PO_Qty'] = pd.to_numeric(df_po_clean[po_qty_col], errors='coerce').fillna(0)
+                
+                po_summary = df_po_clean.groupby(po_num_col).agg(
+                    PO_Qty=('Clean_PO_Qty', 'sum'),
+                    Vendor_PO=('Vendor Name', 'first')
+                ).reset_index()
 
-    pr_file = st.file_uploader(
-        "PR Raw Excel",
-        type=["xlsx", "xls"]
-    )
+                # Merge Today's PRs with PO and PRMTD Data
+                merged = pd.merge(today_summary, po_summary, left_on='PO Number', right_on=po_num_col, how='left')
+                merged = pd.merge(merged, prior_summary, on='PO Number', how='left')
 
-include_cancelled = st.checkbox(
-    "Include Cancelled POs"
-)
+                # Format Display Columns
+                merged['Date'] = merged['PR_Date'].dt.strftime('%d-%m-%y').fillna('')
+                merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO']).fillna('')
+                
+                merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
+                merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
+                merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
+                
+                # Total Receipts = Today PR Qty + PRMTD
+                merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
+                
+                # Excess / Short Calculations
+                merged['Diff'] = merged['Total Received'] - merged['PO Qty']
+                merged['Excess'] = merged['Diff'].apply(lambda x: int(x) if x > 0 else 0)
+                merged['Short'] = merged['Diff'].apply(lambda x: int(x) if x < 0 else 0)  # Negative for Short
+                merged['Sl.no'] = range(1, len(merged) + 1)
 
+                # Overall KPI Metrics
+                total_pos_cnt = len(merged)
+                total_po = int(merged['PO Qty'].sum())
+                total_pr = int(merged['PR Qty'].sum())
+                total_prmtd = int(merged['PRMTD'].sum())
+                total_excess = int(merged['Excess'].sum())
+                total_short = int(merged['Short'].sum())
+                total_fr_val = ((total_pr + total_prmtd) / total_po * 100) if total_po > 0 else 0
 
-# =========================================================
-# PROCESS
-# =========================================================
+                # Column Ordering
+                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Excess", "Short"]
+                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
+                
+                # Fill Rate %
+                fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
+                final_df['PO FR %'] = np.round(fr_numeric).astype(int).astype(str) + '%'
 
-if po_file and pr_file:
+                # Total Row at Bottom
+                total_row = pd.DataFrame([{
+                    "Sl.no": "",
+                    "Date": "",
+                    "PO No": "",
+                    "PR No": "",
+                    "Vendor Name": "Total",
+                    "PO Qty": total_po,
+                    "Today PR Qty": total_pr,
+                    "PRMTD": total_prmtd,
+                    "Excess": total_excess,
+                    "Short": total_short,
+                    "PO FR %": f"{int(round(total_fr_val))}%"
+                }])
 
-    try:
+                display_df = pd.concat([final_df, total_row], ignore_index=True)
 
-        with st.spinner(
-            "Processing..."
-        ):
+                st.session_state["processed_df"] = display_df
+                st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_excess, total_short, total_fr_val)
 
-            po_raw = pd.read_excel(
-                po_file,
-                sheet_name="PurchaseOrder"
-            )
+        except Exception as e:
+            st.error(f"Error processing files: {e}")
 
-            pr_raw = pd.read_excel(
-                pr_file,
-                sheet_name="PurchaseReceive"
-            )
+# Render UI
+if "processed_df" in st.session_state:
+    display_df = st.session_state["processed_df"]
+    total_pos_cnt, total_po, total_pr, total_prmtd, total_excess, total_short, total_fr_val = st.session_state["kpi_metrics"]
 
-            po = prepare_po(po_raw)
+    # Top Summary Metrics Header
+    st.markdown("### 🎯 Total Summary")
+    kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
+    kpi1.metric("Total POs", f"{total_pos_cnt:,}")
+    kpi2.metric("PO Qty", f"{total_po:,}")
+    kpi3.metric("Today PR Qty", f"{total_pr:,}")
+    kpi4.metric("PRMTD Qty", f"{total_prmtd:,}")
+    kpi5.metric("Excess Qty", f"{total_excess:,}")
+    kpi6.metric("Short Qty", f"{total_short:,}")
+    kpi7.metric("Fill Rate", f"{total_fr_val:.1f}%")
 
-            pr = prepare_pr(pr_raw)
+    st.markdown("---")
 
-            report = create_report(
-                po,
-                pr,
-                include_cancelled
-            )
+    # Safe Styling function for Total Row and Badges
+    def highlight_excel_cells(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        for idx, row in df.iterrows():
+            if str(row['Vendor Name']) == 'Total':
+                styles.loc[idx, :] = 'background-color: #f4b084; font-weight: bold; color: black; border-top: 2px solid black; border-bottom: 2px double black'
+            else:
+                try:
+                    if float(row['Excess']) > 0:
+                        styles.loc[idx, 'Excess'] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+                except (ValueError, TypeError):
+                    pass
 
-        st.success(
-            f"Done — {len(report):,} POs processed."
-        )
+                try:
+                    if float(row['Short']) < 0:
+                        styles.loc[idx, 'Short'] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+                except (ValueError, TypeError):
+                    pass
+                    
+        return styles
 
-        # =================================================
-        # SUMMARY
-        # =================================================
+    styled_df = display_df.style.apply(highlight_excel_cells, axis=None)
 
-        total_po = len(report)
+    # Render Table
+    st.table(styled_df)
 
-        total_po_qty = report["PO Qty"].sum()
+    # Excel Download Generator
+    def generate_excel_file(df):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='PO vs PR Summary')
+        return output.getvalue()
 
-        total_pr_mtd = report["PR MTD"].sum()
-
-        total_pr_qty = report["PR Qty"].sum()
-
-        total_excess = report["Excess"].sum()
-
-        total_short = report["Short"].sum()
-
-        fill_rate = (
-            total_pr_qty /
-            total_po_qty *
-            100
-            if total_po_qty > 0
-            else 0
-        )
-
-        st.subheader("Summary")
-
-        a, b, c, d = st.columns(4)
-
-        a.metric(
-            "Total POs",
-            f"{total_po:,}"
-        )
-
-        b.metric(
-            "PO Qty",
-            f"{total_po_qty:,.0f}"
-        )
-
-        c.metric(
-            "PR MTD",
-            f"{total_pr_mtd:,.0f}"
-        )
-
-        d.metric(
-            "PR Qty - 15 Hours",
-            f"{total_pr_qty:,.0f}"
-        )
-
-        e, f, g = st.columns(3)
-
-        e.metric(
-            "Excess",
-            f"{total_excess:,.0f}"
-        )
-
-        f.metric(
-            "Short",
-            f"{total_short:,.0f}"
-        )
-
-        g.metric(
-            "Fill Rate",
-            f"{fill_rate:.2f}%"
-        )
-
-        # =================================================
-        # PREVIEW
-        # =================================================
-
-        st.subheader("Report")
-
-        preview = report.copy()
-
-        preview["Date"] = pd.to_datetime(
-            preview["Date"],
-            errors="coerce"
-        ).dt.strftime("%d-%m-%Y")
-
-        st.dataframe(
-            preview,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # =================================================
-        # DOWNLOAD
-        # =================================================
-
-        st.subheader("Download")
-
-        excel = make_excel(report)
-
-        st.download_button(
-            "⬇️ Download Excel",
-            data=excel,
-            file_name="PO_PR_Summary.xlsx",
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
-            use_container_width=True
-        )
-
-    except Exception as error:
-
-        st.error("Something went wrong.")
-
-        st.exception(error)
-
-else:
-
-    st.info(
-        "Upload both PO Raw Excel and PR Raw Excel files."
+    st.markdown("---")
+    excel_bytes = generate_excel_file(display_df)
+    st.download_button(
+        label="📥 Download Summary as Excel (.xlsx)",
+        data=excel_bytes,
+        file_name="PO_PR_Summary.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
