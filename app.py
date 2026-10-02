@@ -6,7 +6,7 @@ import io
 # Page config - Standard Excel Wide Layout
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
 
-# Excel Grid Styling
+# Excel Grid Styling + High-Contrast KPI Cards
 st.markdown("""
     <style>
         /* Hide default Streamlit headers and footers */
@@ -15,21 +15,30 @@ st.markdown("""
         footer {visibility: hidden;}
         [data-testid="stHeader"] {display: none;}
         
-        /* White Background Container */
+        /* White Main Page Background */
         .main {
             background-color: #ffffff !important;
         }
 
-        /* KPI Top Metric Cards */
+        /* High Contrast Light Cards for Top Metrics */
+        [data-testid="stMetric"] {
+            background-color: #f8f9fa !important;
+            border: 1px solid #dee2e6 !important;
+            padding: 12px 16px !important;
+            border-radius: 8px !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+        }
+
         [data-testid="stMetricValue"] {
-            font-size: 20px !important;
-            font-weight: bold !important;
+            font-size: 22px !important;
+            font-weight: 700 !important;
             color: #111111 !important;
         }
         
         [data-testid="stMetricLabel"] {
             font-size: 13px !important;
-            color: #555555 !important;
+            font-weight: 600 !important;
+            color: #495057 !important;
         }
 
         .stTable {
@@ -155,7 +164,7 @@ if show_uploaders:
                 merged = pd.merge(today_summary, po_summary, left_on='PO Number', right_on=po_num_col, how='left')
                 merged = pd.merge(merged, prior_summary, on='PO Number', how='left')
 
-                # --- SORT CHRONOLOGICALLY BY DATE (EARLIEST TO LATEST) BEFORE FORMATTING ---
+                # Sort chronologically by date
                 merged = merged.sort_values(by='PR_Date', ascending=True).reset_index(drop=True)
 
                 # Format Display Columns
@@ -169,12 +178,10 @@ if show_uploaders:
                 # Total Receipts = Today PR Qty (Last 15 Hrs) + PRMTD (Prior)
                 merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
                 
-                # Excess / Short Calculations
-                merged['Diff'] = merged['Total Received'] - merged['PO Qty']
-                merged['Excess'] = merged['Diff'].apply(lambda x: int(x) if x > 0 else 0)
-                merged['Short'] = merged['Diff'].apply(lambda x: int(x) if x < 0 else 0)  # Negative value for Short
+                # Pending / Unfulfilled Qty Calculation
+                merged['Pending Qty'] = (merged['PO Qty'] - merged['Total Received']).apply(lambda x: int(x) if x > 0 else 0)
                 
-                # Re-assign Sl.no in strictly sorted order (1, 2, 3...)
+                # Re-assign Sl.no in strictly sorted order
                 merged['Sl.no'] = range(1, len(merged) + 1)
 
                 # Overall KPI Metrics
@@ -182,13 +189,12 @@ if show_uploaders:
                 total_po = int(merged['PO Qty'].sum())
                 total_pr = int(merged['PR Qty'].sum())
                 total_prmtd = int(merged['PRMTD'].sum())
-                total_excess = int(merged['Excess'].sum())
-                total_short = int(merged['Short'].sum())
+                total_pending = int(merged['Pending Qty'].sum())
                 total_fr_val = ((total_pr + total_prmtd) / total_po * 100) if total_po > 0 else 0
 
-                # Column Formatting & Headers
-                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Excess", "Short"]
-                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
+                # Column Formatting & Headers (Excess and Short Removed)
+                expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Pending Qty"]
+                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty', 'Pending Qty': 'Pending Qty'})
                 
                 # Fill Rate %
                 fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
@@ -204,15 +210,14 @@ if show_uploaders:
                     "PO Qty": total_po,
                     "Today PR Qty": total_pr,
                     "PRMTD": total_prmtd,
-                    "Excess": total_excess,
-                    "Short": total_short,
+                    "Pending Qty": total_pending,
                     "PO FR %": f"{int(round(total_fr_val))}%"
                 }])
 
                 display_df = pd.concat([final_df, total_row], ignore_index=True)
 
                 st.session_state["processed_df"] = display_df
-                st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_excess, total_short, total_fr_val)
+                st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val)
                 st.session_state["anchor_time"] = latest_pr_time
 
         except Exception as e:
@@ -221,26 +226,25 @@ if show_uploaders:
 # Render UI
 if "processed_df" in st.session_state:
     display_df = st.session_state["processed_df"]
-    total_pos_cnt, total_po, total_pr, total_prmtd, total_excess, total_short, total_fr_val = st.session_state["kpi_metrics"]
+    total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val = st.session_state["kpi_metrics"]
     anchor_time = st.session_state.get("anchor_time", None)
 
     # Top Summary Metrics Header
     st.markdown("### 🎯 Total Summary")
     if anchor_time:
-        st.caption(f"🕒 **Last PR Created Time:** {anchor_time.strftime('%d-%b-%Y %H:%M:%S')} | **15-Hour Window:** {(anchor_time - pd.Timedelta(hours=15)).strftime('%d-%b-%Y %H:%M:%S')} onwards")
+        st.markdown(f"🕒 **Last PR Created Time:** `{anchor_time.strftime('%d-%b-%Y %H:%M:%S')}` | **15-Hour Window:** `{ (anchor_time - pd.Timedelta(hours=15)).strftime('%d-%b-%Y %H:%M:%S') }` onwards")
 
-    kpi1, kpi2, kpi3, kpi4, kpi5, kpi6, kpi7 = st.columns(7)
+    kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
     kpi1.metric("Total POs", f"{total_pos_cnt:,}")
     kpi2.metric("PO Qty", f"{total_po:,}")
     kpi3.metric("Today PR Qty", f"{total_pr:,}")
     kpi4.metric("PRMTD Qty", f"{total_prmtd:,}")
-    kpi5.metric("Excess Qty", f"{total_excess:,}")
-    kpi6.metric("Short Qty", f"{total_short:,}")
-    kpi7.metric("Fill Rate", f"{total_fr_val:.1f}%")
+    kpi5.metric("Pending Qty", f"{total_pending:,}")
+    kpi6.metric("Fill Rate", f"{total_fr_val:.1f}%")
 
     st.markdown("---")
 
-    # Safe Styling function for Total Row and Badges
+    # Styling function for Total Row and Pending Highlights
     def highlight_excel_cells(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for idx, row in df.iterrows():
@@ -248,14 +252,8 @@ if "processed_df" in st.session_state:
                 styles.loc[idx, :] = 'background-color: #f4b084; font-weight: bold; color: black; border-top: 2px solid black; border-bottom: 2px double black'
             else:
                 try:
-                    if float(row['Excess']) > 0:
-                        styles.loc[idx, 'Excess'] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
-                except (ValueError, TypeError):
-                    pass
-
-                try:
-                    if float(row['Short']) < 0:
-                        styles.loc[idx, 'Short'] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+                    if float(row['Pending Qty']) > 0:
+                        styles.loc[idx, 'Pending Qty'] = 'background-color: #fff3cd; color: #856404; font-weight: bold;'
                 except (ValueError, TypeError):
                     pass
                     
