@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 import io
 
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
 # Page config - Standard Excel Wide Layout
 st.set_page_config(page_title="PO vs PR Summary", page_icon="📊", layout="wide")
 
@@ -192,9 +196,9 @@ if show_uploaders:
                 total_pending = int(merged['Pending Qty'].sum())
                 total_fr_val = ((total_pr + total_prmtd) / total_po * 100) if total_po > 0 else 0
 
-                # Column Formatting & Headers (Excess and Short Removed)
+                # Column Formatting & Headers
                 expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Pending Qty"]
-                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty', 'Pending Qty': 'Pending Qty'})
+                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
                 
                 # Fill Rate %
                 fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
@@ -244,7 +248,7 @@ if "processed_df" in st.session_state:
 
     st.markdown("---")
 
-    # Styling function for Total Row and Pending Highlights
+    # Styling function for UI Display Table
     def highlight_excel_cells(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for idx, row in df.iterrows():
@@ -261,14 +265,101 @@ if "processed_df" in st.session_state:
 
     styled_df = display_df.style.apply(highlight_excel_cells, axis=None)
 
-    # Render Table
+    # Render Streamlit Table
     st.table(styled_df)
 
-    # Excel Download Generator
+    # --- FULLY STYLED OPENPYXL EXCEL GENERATOR ---
     def generate_excel_file(df):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PO vs PR Summary"
+        ws.views.sheetView[0].showGridLines = True
+
+        # Color definitions
+        header_fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        zebra_fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        yellow_pending_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+        orange_total_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+
+        # Borders
+        thin_side = Side(border_style="thin", color="D9D9D9")
+        thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        
+        total_top_side = Side(border_style="thin", color="000000")
+        total_bottom_side = Side(border_style="double", color="000000")
+        total_border = Border(left=thin_side, right=thin_side, top=total_top_side, bottom=total_bottom_side)
+
+        # Fonts
+        font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
+        font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
+        font_pending = Font(name="Segoe UI", size=11, bold=True, color="856404")
+        font_total = Font(name="Segoe UI", size=11, bold=True, color="000000")
+
+        # Alignments
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+
+        headers = list(df.columns)
+        ws.append(headers)
+
+        # Style Header Row
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = font_header
+            cell.alignment = align_center
+            cell.border = Border(left=Side(border_style="thin", color="BFBFBF"),
+                                 right=Side(border_style="thin", color="BFBFBF"),
+                                 top=Side(border_style="thin", color="BFBFBF"),
+                                 bottom=Side(border_style="thin", color="BFBFBF"))
+
+        pending_col_idx = headers.index('Pending Qty') + 1 if 'Pending Qty' in headers else None
+
+        # Append Data Rows & Apply Styles
+        for r_idx, row_data in enumerate(df.values, start=2):
+            ws.append(list(row_data))
+            is_total_row = (str(row_data[headers.index('Vendor Name')]) == 'Total') if 'Vendor Name' in headers else False
+
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=r_idx, column=col_idx)
+                val = cell.value
+
+                if is_total_row:
+                    cell.fill = orange_total_fill
+                    cell.font = font_total
+                    cell.border = total_border
+                else:
+                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
+                    cell.font = font_regular
+                    cell.border = thin_border
+
+                    # Apply Yellow Highlight to Pending Qty > 0
+                    if col_idx == pending_col_idx:
+                        try:
+                            if float(val) > 0:
+                                cell.fill = yellow_pending_fill
+                                cell.font = font_pending
+                        except (ValueError, TypeError):
+                            pass
+
+                # Alignments
+                if headers[col_idx - 1] in ['Sl.no', 'Date', 'PO No', 'PR No', 'PO FR %']:
+                    cell.alignment = align_center
+                elif headers[col_idx - 1] in ['Vendor Name']:
+                    cell.alignment = align_left
+                else:
+                    cell.alignment = align_right
+
+        # Adjust Column Widths Dynamically
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='PO vs PR Summary')
+        wb.save(output)
         return output.getvalue()
 
     st.markdown("---")
