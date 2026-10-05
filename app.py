@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import requests
+import concurrent.futures
 from datetime import datetime, timedelta
 
 import openpyxl
@@ -121,6 +122,22 @@ def get_zoho_access_token():
     else:
         raise Exception(f"Failed to refresh Zoho Token: {res_data}")
 
+def fetch_po_line_item_quantity(po_id, org_id, domain, access_token):
+    """The bulk 'List Purchase Orders' endpoint does not include ordered
+    quantity (it only has monetary totals like 'total'), so quantity has to
+    be read from each PO's line_items via the single-record detail endpoint."""
+    headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
+    detail_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
+    params = {"organization_id": org_id}
+    try:
+        res = requests.get(detail_url, headers=headers, params=params, timeout=20).json()
+        line_items = res.get("purchaseorder", {}).get("line_items", [])
+        total_qty = sum(float(li.get("quantity", 0) or 0) for li in line_items)
+        return po_id, total_qty
+    except Exception:
+        return po_id, 0
+
+
 def fetch_zoho_data_last_15_days():
     access_token = get_zoho_access_token()
     org_id = st.secrets["zoho"]["organization_id"]
@@ -132,7 +149,7 @@ def fetch_zoho_data_last_15_days():
     # Fast bulk fetch for POs
     po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
     po_params = {
-        "organization_id": org_id, 
+        "organization_id": org_id,
         "date_after": date_15_days_ago,
         "sort_column": "date",
         "sort_order": "D"
@@ -143,6 +160,23 @@ def fetch_zoho_data_last_15_days():
         raise Exception(f"Zoho Purchase Orders API error: {po_res}")
 
     po_list = po_res.get("purchaseorders", [])
+
+    # The list endpoint doesn't return ordered quantity, so fetch each PO's
+    # line items in parallel and attach the summed quantity as 'quantity'.
+    po_ids = [po.get("purchaseorder_id") for po in po_list if po.get("purchaseorder_id")]
+    qty_by_po_id = {}
+    if po_ids:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_po_line_item_quantity, po_id, org_id, domain, access_token)
+                for po_id in po_ids
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                po_id, qty = future.result()
+                qty_by_po_id[po_id] = qty
+
+    for po in po_list:
+        po["quantity"] = qty_by_po_id.get(po.get("purchaseorder_id"), 0)
 
     # Fast bulk fetch for PRs
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
