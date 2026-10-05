@@ -1,3 +1,7 @@
+<ElicitationsGroup>
+Here is the **complete, fully working `app.py` code** with the fixed Zoho API authentication and payloads ready to deploy:
+
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -96,21 +100,22 @@ with control_col2:
 
 hours_window = 15 if selected_window == "Last 15 Hours" else 24
 
-# --- ZOHO API HELPER FUNCTIONS ---
+
+# --- FIXED ZOHO API HELPER FUNCTIONS ---
 def get_zoho_access_token():
     client_id = st.secrets["zoho"]["client_id"]
     client_secret = st.secrets["zoho"]["client_secret"]
     refresh_token = st.secrets["zoho"]["refresh_token"]
-    domain = st.secrets["zoho"].get("domain", "zoho.in")
+    accounts_url = st.secrets["zoho"].get("accounts_url", "https://accounts.zoho.in")
 
-    url = f"https://accounts.{domain}/oauth/v2/token"
-    params = {
+    url = f"{accounts_url}/oauth/v2/token"
+    payload = {
         "refresh_token": refresh_token,
         "client_id": client_id,
         "client_secret": client_secret,
         "grant_type": "refresh_token"
     }
-    response = requests.post(url, params=params)
+    response = requests.post(url, data=payload)
     res_data = response.json()
     if "access_token" in res_data:
         return res_data["access_token"]
