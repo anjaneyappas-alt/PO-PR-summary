@@ -97,7 +97,7 @@ with control_col2:
 hours_window = 15 if selected_window == "Last 15 Hours" else 24
 
 
-# --- FIXED ZOHO API HELPER FUNCTIONS ---
+# --- ZOHO API HELPER FUNCTIONS ---
 def get_zoho_access_token():
     client_id = st.secrets["zoho"]["client_id"]
     client_secret = st.secrets["zoho"]["client_secret"]
@@ -111,7 +111,10 @@ def get_zoho_access_token():
         "client_secret": client_secret,
         "grant_type": "refresh_token"
     }
-    response = requests.post(url, data=payload)
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    response = requests.post(url, data=payload, headers=headers)
     res_data = response.json()
     if "access_token" in res_data:
         return res_data["access_token"]
