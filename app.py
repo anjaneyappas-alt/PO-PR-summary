@@ -86,8 +86,20 @@ st.markdown("""
 
 st.title("📊 PO vs PR Excel View")
 
-# Toggle panel to hide uploaders
-show_uploaders = st.toggle("🎚 Show Upload Panel", value=True)
+# Control Panel: Toggle panel visibility & Select Lookback Window
+control_col1, control_col2 = st.columns([1, 2])
+with control_col1:
+    show_uploaders = st.toggle("🎚 Show Upload Panel", value=True)
+with control_col2:
+    selected_window = st.radio(
+        "⏱ Select PR Lookback Window:",
+        options=["Last 15 Hours", "Last 24 Hours"],
+        horizontal=True,
+        index=0
+    )
+
+# Determine hours numerical value
+hours_window = 15 if selected_window == "Last 15 Hours" else 24
 
 if show_uploaders:
     col1, col2 = st.columns(2)
@@ -114,7 +126,7 @@ if show_uploaders:
                 pr_no_col = 'Receive Number' if 'Receive Number' in df_pr.columns else ('PR Number' if 'PR Number' in df_pr.columns else 'Purchase Receive ID')
                 qty_pr_col = 'Quantity Received' if 'Quantity Received' in df_pr.columns else 'Quantity'
                 
-                # Prioritize CreatedTime for 15-hour precision timestamp
+                # Prioritize CreatedTime for precision timestamp
                 if 'CreatedTime' in df_pr.columns:
                     time_col = 'CreatedTime'
                 elif 'Receive Date' in df_pr.columns:
@@ -129,20 +141,20 @@ if show_uploaders:
                 # Parse Created Timestamp
                 df_pr_clean['DT'] = pd.to_datetime(df_pr_clean[time_col], errors='coerce')
                 
-                # Dynamic 15-Hour Calculation relative to the LATEST created timestamp in the PR file
+                # Dynamic Lookback Calculation relative to the LATEST created timestamp in the PR file
                 latest_pr_time = df_pr_clean['DT'].max()
                 
                 if pd.notna(latest_pr_time):
-                    cutoff_time = latest_pr_time - pd.Timedelta(hours=15)
-                    # Today's PRs: Created within the last 15 hours of latest PR time
+                    cutoff_time = latest_pr_time - pd.Timedelta(hours=hours_window)
+                    # Today's PRs: Created within the selected lookback window (15h or 24h)
                     df_today = df_pr_clean[df_pr_clean['DT'] >= cutoff_time]
-                    # PRMTD: Created before the last 15 hours window
+                    # PRMTD: Created before the selected lookback window
                     df_prior = df_pr_clean[df_pr_clean['DT'] < cutoff_time]
                 else:
                     df_today = df_pr_clean
                     df_prior = pd.DataFrame(columns=df_pr_clean.columns)
 
-                # Group 1: Today's PR Data (Last 15 Hours)
+                # Group 1: Today's PR Data (Within lookback window)
                 today_summary = df_today.groupby('PO Number').agg(
                     PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
                     PR_Qty=('Clean_PR_Qty', 'sum'),
@@ -150,7 +162,7 @@ if show_uploaders:
                     Vendor_PR=('Vendor Name', 'first')
                 ).reset_index()
 
-                # Group 2: PRMTD Data (Created prior to 15 hours for the same PO)
+                # Group 2: PRMTD Data (Created prior to selected hours for the same PO)
                 prior_summary = df_prior.groupby('PO Number').agg(
                     PRMTD=('Clean_PR_Qty', 'sum')
                 ).reset_index()
@@ -179,7 +191,7 @@ if show_uploaders:
                 merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
                 merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
                 
-                # Total Receipts = Today PR Qty (Last 15 Hrs) + PRMTD (Prior)
+                # Total Receipts = Today PR Qty + PRMTD (Prior)
                 merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
                 
                 # Pending / Unfulfilled Qty Calculation
@@ -198,7 +210,7 @@ if show_uploaders:
 
                 # Column Formatting & Headers
                 expected_headers = ["Sl.no", "Date", "PO Number", "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Pending Qty"]
-                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
+                final_df = merged[expected_headers].rename(columns={'PO Number': 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty', 'Pending Qty': 'Pending Qty'})
                 
                 # Fill Rate %
                 fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
@@ -223,6 +235,7 @@ if show_uploaders:
                 st.session_state["processed_df"] = display_df
                 st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val)
                 st.session_state["anchor_time"] = latest_pr_time
+                st.session_state["window_hours"] = hours_window
 
         except Exception as e:
             st.error(f"Error processing files: {e}")
@@ -232,16 +245,17 @@ if "processed_df" in st.session_state:
     display_df = st.session_state["processed_df"]
     total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val = st.session_state["kpi_metrics"]
     anchor_time = st.session_state.get("anchor_time", None)
+    active_window = st.session_state.get("window_hours", 15)
 
     # Top Summary Metrics Header
     st.markdown("### 🎯 Total Summary")
     if anchor_time:
-        st.markdown(f"🕒 **Last PR Created Time:** `{anchor_time.strftime('%d-%b-%Y %H:%M:%S')}` | **15-Hour Window:** `{ (anchor_time - pd.Timedelta(hours=15)).strftime('%d-%b-%Y %H:%M:%S') }` onwards")
+        st.markdown(f"🕒 **Last PR Created Time:** `{anchor_time.strftime('%d-%b-%Y %H:%M:%S')}` | **{active_window}-Hour Window:** `{ (anchor_time - pd.Timedelta(hours=active_window)).strftime('%d-%b-%Y %H:%M:%S') }` onwards")
 
     kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
     kpi1.metric("Total POs", f"{total_pos_cnt:,}")
     kpi2.metric("PO Qty", f"{total_po:,}")
-    kpi3.metric("Today PR Qty", f"{total_pr:,}")
+    kpi3.metric(f"Today PR Qty ({active_window}h)", f"{total_pr:,}")
     kpi4.metric("PRMTD Qty", f"{total_prmtd:,}")
     kpi5.metric("Pending Qty", f"{total_pending:,}")
     kpi6.metric("Fill Rate", f"{total_fr_val:.1f}%")
@@ -367,6 +381,6 @@ if "processed_df" in st.session_state:
     st.download_button(
         label="📥 Download Summary as Excel (.xlsx)",
         data=excel_bytes,
-        file_name="PO_PR_Summary.xlsx",
+        file_name=f"PO_PR_Summary_{active_window}h.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
