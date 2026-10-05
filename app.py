@@ -210,7 +210,8 @@ if df_po_raw is not None and df_pr_raw is not None:
             df_pr.columns = df_pr.columns.str.strip()
 
             po_num_col = find_first_existing_col(df_po, ['purchaseorder_number', 'Purchase Order Number', 'PO Number', 'purchaseorder_no'])
-            po_qty_col = find_first_existing_col(df_po, ['quantity', 'total_quantity', 'QuantityOrdered', 'Quantity', 'quantity_ordered', 'total'])
+            # Strictly filtering quantity columns (excluding monetary 'total')
+            po_qty_col = find_first_existing_col(df_po, ['quantity', 'total_quantity', 'QuantityOrdered', 'Quantity', 'quantity_ordered'])
 
             pr_no_col = find_first_existing_col(df_pr, ['purchasereceive_number', 'receive_number', 'Receive Number', 'PR Number'])
             qty_pr_col = find_first_existing_col(df_pr, ['quantity', 'quantity_received', 'Quantity Received', 'total_quantity', 'Quantity'])
@@ -254,7 +255,7 @@ if df_po_raw is not None and df_pr_raw is not None:
 
             df_po_clean = df_po.dropna(subset=[po_num_col]).copy() if po_num_col else df_po.copy()
             
-            if po_qty_col in df_po_clean.columns:
+            if po_qty_col and po_qty_col in df_po_clean.columns:
                 df_po_clean['Clean_PO_Qty'] = pd.to_numeric(df_po_clean[po_qty_col], errors='coerce').fillna(0)
             else:
                 df_po_clean['Clean_PO_Qty'] = 0
