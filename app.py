@@ -4,6 +4,7 @@ import numpy as np
 import io
 import requests
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -121,6 +122,20 @@ def get_zoho_access_token():
     else:
         raise Exception(f"Failed to refresh Zoho Token: {res_data}")
 
+def fetch_single_po_details(po_id, headers, domain, org_id):
+    try:
+        url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
+        res = requests.get(url, headers=headers, params={"organization_id": org_id}).json()
+        if "purchaseorder" in res:
+            po = res["purchaseorder"]
+            line_items = po.get("line_items", [])
+            total_qty = sum(float(item.get("quantity", 0)) for item in line_items)
+            po["calculated_po_qty"] = total_qty
+            return po
+    except Exception:
+        pass
+    return None
+
 def fetch_zoho_data_last_15_days():
     access_token = get_zoho_access_token()
     org_id = st.secrets["zoho"]["organization_id"]
@@ -130,22 +145,7 @@ def fetch_zoho_data_last_15_days():
     date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
     date_90_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-    # Fetch POs with 90-day window
-    po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
-    po_params = {
-        "organization_id": org_id, 
-        "date_after": date_90_days_ago,
-        "sort_column": "date",
-        "sort_order": "D"
-    }
-    po_res = requests.get(po_url, headers=headers, params=po_params).json()
-
-    if "purchaseorders" not in po_res:
-        raise Exception(f"Zoho Purchase Orders API error: {po_res}")
-
-    po_list = po_res.get("purchaseorders", [])
-
-    # Fetch PRs from last 15 days
+    # 1. Fetch PRs from last 15 days first
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
     pr_params = {
         "organization_id": org_id, 
@@ -158,19 +158,47 @@ def fetch_zoho_data_last_15_days():
     if "purchasereceives" not in pr_res:
         raise Exception(f"Zoho Purchase Receives API error: {pr_res}")
 
-    # Process PO quantities cleanly
-    df_po = pd.DataFrame(po_list)
-    if not df_po.empty:
-        if 'quantity' in df_po.columns:
-            df_po['calculated_po_qty'] = pd.to_numeric(df_po['quantity'], errors='coerce').fillna(0)
-        elif 'quantity_ordered' in df_po.columns:
-            df_po['calculated_po_qty'] = pd.to_numeric(df_po['quantity_ordered'], errors='coerce').fillna(0)
-        elif 'total_quantity' in df_po.columns:
-            df_po['calculated_po_qty'] = pd.to_numeric(df_po['total_quantity'], errors='coerce').fillna(0)
-        else:
-            df_po['calculated_po_qty'] = 0
+    pr_list = pr_res.get("purchasereceives", [])
+    df_pr = pd.DataFrame(pr_list)
 
-    df_pr = pd.DataFrame(pr_res.get("purchasereceives", []))
+    # Find unique PO numbers referenced in these PRs
+    po_ref_col = find_first_existing_col(df_pr, ['purchaseorder_number', 'PO Number', 'po_number', 'purchaseorder_no'])
+    target_po_numbers = set(df_pr[po_ref_col].dropna().unique()) if po_ref_col in df_pr.columns else set()
+
+    # 2. Fetch POs list (90-day window)
+    po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
+    po_params = {
+        "organization_id": org_id, 
+        "date_after": date_90_days_ago,
+        "sort_column": "date",
+        "sort_order": "D"
+    }
+    po_res = requests.get(po_url, headers=headers, params=po_params).json()
+
+    if "purchaseorders" not in po_res:
+        raise Exception(f"Zoho Purchase Orders API error: {po_res}")
+
+    po_summary_list = po_res.get("purchaseorders", [])
+
+    # Filter POs that match our PRs
+    po_to_fetch = [
+        po for po in po_summary_list 
+        if po.get("purchaseorder_number") in target_po_numbers or not target_po_numbers
+    ]
+
+    # Fast parallel fetching of line items for active POs
+    detailed_pos = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [
+            executor.submit(fetch_single_po_details, po["purchaseorder_id"], headers, domain, org_id)
+            for po in po_to_fetch if "purchaseorder_id" in po
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                detailed_pos.append(result)
+
+    df_po = pd.DataFrame(detailed_pos) if detailed_pos else pd.DataFrame(po_summary_list)
 
     return df_po, df_pr
 
@@ -192,7 +220,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Fetch Last 15 Days Data from Zoho", type="primary"):
         try:
-            with st.spinner("Fetching live PO & PR data from Zoho APIs..."):
+            with st.spinner("Fetching live PO & PR line-item data from Zoho..."):
                 df_po_raw, df_pr_raw = fetch_zoho_data_last_15_days()
                 st.session_state["raw_po"] = df_po_raw
                 st.session_state["raw_pr"] = df_pr_raw
@@ -222,7 +250,7 @@ if df_po_raw is not None and df_pr_raw is not None:
             df_pr.columns = df_pr.columns.str.strip()
 
             po_num_col = find_first_existing_col(df_po, ['purchaseorder_number', 'Purchase Order Number', 'PO Number', 'purchaseorder_no'])
-            po_qty_col = find_first_existing_col(df_po, ['calculated_po_qty', 'QuantityOrdered', 'Quantity', 'quantity', 'total_quantity', 'quantity_ordered'])
+            po_qty_col = find_first_existing_col(df_po, ['calculated_po_qty', 'QuantityOrdered', 'Quantity', 'quantity', 'quantity_ordered'])
 
             pr_no_col = find_first_existing_col(df_pr, ['purchasereceive_number', 'receive_number', 'Receive Number', 'PR Number'])
             qty_pr_col = find_first_existing_col(df_pr, ['quantity', 'quantity_received', 'Quantity Received', 'total_quantity', 'Quantity'])
