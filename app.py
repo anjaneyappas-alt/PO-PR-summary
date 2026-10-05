@@ -129,28 +129,39 @@ def get_zoho_access_token():
     else:
         raise Exception(f"Failed to refresh Zoho Token: {res_data}")
 
-def fetch_single_po_details(po_id, headers, domain, org_id):
+def fetch_po_by_number(po_number, headers, domain, org_id):
+    """Directly fetch a PO by its exact number and calculate line-item quantities."""
     try:
-        url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
-        res = requests.get(url, headers=headers, params={"organization_id": org_id}).json()
-        if "purchaseorder" in res:
-            po = res["purchaseorder"]
-            line_items = po.get("line_items", [])
-            total_qty = sum(float(item.get("quantity", 0)) for item in line_items)
-            po["calculated_po_qty"] = total_qty
-            return po
+        url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
+        params = {"organization_id": org_id, "purchaseorder_number": po_number}
+        res = requests.get(url, headers=headers, params=params).json()
+        po_list = res.get("purchaseorders", [])
+        
+        if po_list:
+            po_id = po_list[0].get("purchaseorder_id")
+            single_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
+            single_res = requests.get(single_url, headers=headers, params={"organization_id": org_id}).json()
+            if "purchaseorder" in single_res:
+                po_detail = single_res["purchaseorder"]
+                line_items = po_detail.get("line_items", [])
+                total_qty = sum(float(item.get("quantity", 0)) for item in line_items)
+                po_detail["calculated_po_qty"] = total_qty
+                return po_detail
+            else:
+                po = po_list[0]
+                po["calculated_po_qty"] = float(po.get("quantity", po.get("quantity_ordered", 0)))
+                return po
     except Exception:
         pass
     return None
 
-def fetch_zoho_data_last_30_days():
+def fetch_zoho_data_live():
     access_token = get_zoho_access_token()
     org_id = st.secrets["zoho"]["organization_id"]
     domain = st.secrets["zoho"].get("domain", "zoho.in")
 
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    date_90_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
     # 1. Fetch PRs from last 30 days
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
@@ -168,44 +179,24 @@ def fetch_zoho_data_last_30_days():
     pr_list = pr_res.get("purchasereceives", [])
     df_pr = pd.DataFrame(pr_list)
 
-    # Find unique PO numbers referenced in these PRs
+    # Extract unique PO numbers referenced in PRs
     po_ref_col = find_first_existing_col(df_pr, ['purchaseorder_number', 'PO Number', 'po_number', 'purchaseorder_no'])
-    target_po_numbers = set(df_pr[po_ref_col].dropna().unique()) if po_ref_col in df_pr.columns else set()
+    unique_po_numbers = list(set(df_pr[po_ref_col].dropna().unique())) if (not df_pr.empty and po_ref_col in df_pr.columns) else []
 
-    # 2. Fetch POs list (90-day window to catch active POs)
-    po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
-    po_params = {
-        "organization_id": org_id, 
-        "date_after": date_90_days_ago,
-        "sort_column": "date",
-        "sort_order": "D"
-    }
-    po_res = requests.get(po_url, headers=headers, params=po_params).json()
-
-    if "purchaseorders" not in po_res:
-        raise Exception(f"Zoho Purchase Orders API error: {po_res}")
-
-    po_summary_list = po_res.get("purchaseorders", [])
-
-    # Filter POs that match our PRs
-    po_to_fetch = [
-        po for po in po_summary_list 
-        if po.get("purchaseorder_number") in target_po_numbers or not target_po_numbers
-    ]
-
-    # Fast parallel fetching of line items for active POs
+    # 2. Fetch EXACT POs directly by PO number in parallel
     detailed_pos = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(fetch_single_po_details, po["purchaseorder_id"], headers, domain, org_id)
-            for po in po_to_fetch if "purchaseorder_id" in po
-        ]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                detailed_pos.append(result)
+    if unique_po_numbers:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(fetch_po_by_number, po_num, headers, domain, org_id)
+                for po_num in unique_po_numbers
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    detailed_pos.append(result)
 
-    df_po = pd.DataFrame(detailed_pos) if detailed_pos else pd.DataFrame(po_summary_list)
+    df_po = pd.DataFrame(detailed_pos) if detailed_pos else pd.DataFrame()
 
     return df_po, df_pr
 
@@ -225,13 +216,13 @@ if data_source == "Upload Files":
 
 else:
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 Fetch Last 1 Month Data from Zoho", type="primary"):
+    if st.button("🔄 Fetch Live Data from Zoho", type="primary"):
         try:
-            with st.spinner("Fetching 1 month of live PO & PR line-item data from Zoho..."):
-                df_po_raw, df_pr_raw = fetch_zoho_data_last_30_days()
+            with st.spinner("Targeting and fetching exact PO & PR line-item data from Zoho..."):
+                df_po_raw, df_pr_raw = fetch_zoho_data_live()
                 st.session_state["raw_po"] = df_po_raw
                 st.session_state["raw_pr"] = df_pr_raw
-                st.success("Successfully fetched 1 month of live data from Zoho!")
+                st.success("Successfully fetched live data from Zoho!")
         except Exception as e:
             st.error(f"Zoho API Error: {e}")
 
@@ -285,14 +276,14 @@ if df_po_raw is not None and df_pr_raw is not None:
                 PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
                 PR_Qty=('Clean_PR_Qty', 'sum'),
                 PR_Date=('DT', 'max'),
-                Vendor_PR=(vendor_col_pr, 'first') if vendor_col_pr in df_today.columns else (pr_no_col, 'first')
+                Vendor_PR=(vendor_col_pr, 'first') if (vendor_col_pr and vendor_col_pr in df_today.columns) else (pr_no_col, 'first')
             ).reset_index()
 
             prior_summary = df_prior.groupby(po_ref_in_pr).agg(
                 PRMTD=('Clean_PR_Qty', 'sum')
             ).reset_index()
 
-            df_po_clean = df_po.dropna(subset=[po_num_col]).copy() if po_num_col else df_po.copy()
+            df_po_clean = df_po.dropna(subset=[po_num_col]).copy() if (po_num_col and not df_po.empty) else df_po.copy()
             
             if po_qty_col and po_qty_col in df_po_clean.columns:
                 df_po_clean['Clean_PO_Qty'] = pd.to_numeric(df_po_clean[po_qty_col], errors='coerce').fillna(0)
@@ -301,10 +292,10 @@ if df_po_raw is not None and df_pr_raw is not None:
 
             po_summary = df_po_clean.groupby(po_num_col).agg(
                 PO_Qty=('Clean_PO_Qty', 'sum'),
-                Vendor_PO=(vendor_col_po, 'first') if vendor_col_po in df_po_clean.columns else (po_num_col, 'first')
-            ).reset_index()
+                Vendor_PO=(vendor_col_po, 'first') if (vendor_col_po and vendor_col_po in df_po_clean.columns) else (po_num_col, 'first')
+            ).reset_index() if not df_po_clean.empty else pd.DataFrame(columns=[po_ref_in_pr, 'PO_Qty', 'Vendor_PO'])
 
-            merged = pd.merge(today_summary, po_summary, left_on=po_ref_in_pr, right_on=po_num_col, how='left')
+            merged = pd.merge(today_summary, po_summary, left_on=po_ref_in_pr, right_on=po_num_col if not po_summary.empty else po_ref_in_pr, how='left')
             merged = pd.merge(merged, prior_summary, on=po_ref_in_pr, how='left')
 
             if 'PR_Date' in merged.columns and pd.api.types.is_datetime64_any_dtype(merged['PR_Date']):
@@ -313,7 +304,7 @@ if df_po_raw is not None and df_pr_raw is not None:
             else:
                 merged['Date'] = ''
 
-            merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO']).fillna('')
+            merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged.get('Vendor_PO', '')).fillna('')
             
             merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
             merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
@@ -397,94 +388,4 @@ if "processed_df" in st.session_state:
     st.table(styled_df)
 
     def generate_excel_file(df):
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "PO vs PR Summary"
-        ws.views.sheetView[0].showGridLines = True
-
-        header_fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-        zebra_fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
-        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-        yellow_pending_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
-        orange_total_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
-
-        thin_side = Side(border_style="thin", color="D9D9D9")
-        thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-        
-        total_top_side = Side(border_style="thin", color="000000")
-        total_bottom_side = Side(border_style="double", color="000000")
-        total_border = Border(left=thin_side, right=thin_side, top=total_top_side, bottom=total_bottom_side)
-
-        font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
-        font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
-        font_pending = Font(name="Segoe UI", size=11, bold=True, color="856404")
-        font_total = Font(name="Segoe UI", size=11, bold=True, color="000000")
-
-        align_center = Alignment(horizontal="center", vertical="center")
-        align_left = Alignment(horizontal="left", vertical="center")
-        align_right = Alignment(horizontal="right", vertical="center")
-
-        headers = list(df.columns)
-        ws.append(headers)
-
-        for col_idx in range(1, len(headers) + 1):
-            cell = ws.cell(row=1, column=col_idx)
-            cell.fill = header_fill
-            cell.font = font_header
-            cell.alignment = align_center
-            cell.border = Border(left=Side(border_style="thin", color="BFBFBF"),
-                                 right=Side(border_style="thin", color="BFBFBF"),
-                                 top=Side(border_style="thin", color="BFBFBF"),
-                                 bottom=Side(border_style="thin", color="BFBFBF"))
-
-        pending_col_idx = headers.index('Pending Qty') + 1 if 'Pending Qty' in headers else None
-
-        for r_idx, row_data in enumerate(df.values, start=2):
-            ws.append(list(row_data))
-            is_total_row = (str(row_data[headers.index('Vendor Name')]) == 'Total') if 'Vendor Name' in headers else False
-
-            for col_idx in range(1, len(headers) + 1):
-                cell = ws.cell(row=r_idx, column=col_idx)
-                val = cell.value
-
-                if is_total_row:
-                    cell.fill = orange_total_fill
-                    cell.font = font_total
-                    cell.border = total_border
-                else:
-                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
-                    cell.font = font_regular
-                    cell.border = thin_border
-
-                    if col_idx == pending_col_idx:
-                        try:
-                            if float(val) > 0:
-                                cell.fill = yellow_pending_fill
-                                cell.font = font_pending
-                        except (ValueError, TypeError):
-                            pass
-
-                if headers[col_idx - 1] in ['Sl.no', 'Date', 'PO No', 'PR No', 'PO FR %']:
-                    cell.alignment = align_center
-                elif headers[col_idx - 1] in ['Vendor Name']:
-                    cell.alignment = align_left
-                else:
-                    cell.alignment = align_right
-
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-        output = io.BytesIO()
-        wb.save(output)
-        return output.getvalue()
-
-    st.markdown("---")
-    excel_bytes = generate_excel_file(display_df)
-    st.download_button(
-        label="📥 Download Summary as Excel (.xlsx)",
-        data=excel_bytes,
-        file_name=f"PO_PR_Summary_{active_window}h.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        wb = open
