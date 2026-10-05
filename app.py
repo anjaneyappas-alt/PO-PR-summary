@@ -1,11 +1,3 @@
-<ElicitationsGroup>
-Here is the code structured for GitHub, along with a `.gitignore` file to ensure your secret keys and API credentials stay safe and private.
-
----
-
-### 1. `app.py` (Main Streamlit App Code)
-
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
