@@ -129,15 +129,27 @@ def fetch_zoho_data_last_15_days():
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
 
+    # Fetch POs sorted by newest first
     po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
-    po_params = {"organization_id": org_id, "date_after": date_15_days_ago}
+    po_params = {
+        "organization_id": org_id, 
+        "date_after": date_15_days_ago,
+        "sort_column": "date",
+        "sort_order": "D"
+    }
     po_res = requests.get(po_url, headers=headers, params=po_params).json()
 
     if "purchaseorders" not in po_res:
         raise Exception(f"Zoho Purchase Orders API error: {po_res}")
 
+    # Fetch PRs sorted by newest created time first
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
-    pr_params = {"organization_id": org_id, "date_after": date_15_days_ago}
+    pr_params = {
+        "organization_id": org_id, 
+        "date_after": date_15_days_ago,
+        "sort_column": "created_time",
+        "sort_order": "D"
+    }
     pr_res = requests.get(pr_url, headers=headers, params=pr_params).json()
 
     if "purchasereceives" not in pr_res:
