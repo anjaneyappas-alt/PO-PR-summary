@@ -83,6 +83,13 @@ st.markdown("""
 
 st.title("📊 PO vs PR Excel View")
 
+# Helper for robust column lookup (Placed at top so functions below can use it)
+def find_first_existing_col(df, candidates, default=None):
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return default
+
 # Control Panel
 control_col1, control_col2 = st.columns([1, 2])
 with control_col1:
@@ -231,13 +238,6 @@ else:
     if "raw_po" in st.session_state and "raw_pr" in st.session_state:
         df_po_raw = st.session_state["raw_po"]
         df_pr_raw = st.session_state["raw_pr"]
-
-# Helper for robust column lookup
-def find_first_existing_col(df, candidates, default=None):
-    for col in candidates:
-        if col in df.columns:
-            return col
-    return default
 
 # Process Data
 if df_po_raw is not None and df_pr_raw is not None:
