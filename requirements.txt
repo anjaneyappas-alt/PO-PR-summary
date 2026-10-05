@@ -1,4 +1,7 @@
+```text
 streamlit
 pandas
+numpy
 openpyxl
-reportlab
+requests
+```
