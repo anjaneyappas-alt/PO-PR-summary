@@ -129,7 +129,7 @@ def fetch_zoho_data_last_15_days():
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
 
-    # Fetch POs sorted by newest first
+    # Fast bulk fetch for POs
     po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
     po_params = {
         "organization_id": org_id, 
@@ -143,26 +143,8 @@ def fetch_zoho_data_last_15_days():
         raise Exception(f"Zoho Purchase Orders API error: {po_res}")
 
     po_list = po_res.get("purchaseorders", [])
-    
-    # Fetch detailed PO info to get line-item quantities
-    detailed_pos = []
-    for po in po_list:
-        po_id = po.get("purchaseorder_id")
-        if po_id:
-            single_po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
-            single_res = requests.get(single_po_url, headers=headers, params={"organization_id": org_id}).json()
-            if "purchaseorder" in single_res:
-                po_detail = single_res["purchaseorder"]
-                line_items = po_detail.get("line_items", [])
-                total_qty = sum(float(item.get("quantity", 0)) for item in line_items)
-                po_detail["total_quantity"] = total_qty
-                detailed_pos.append(po_detail)
-            else:
-                detailed_pos.append(po)
-        else:
-            detailed_pos.append(po)
 
-    # Fetch PRs sorted by newest created time first
+    # Fast bulk fetch for PRs
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
     pr_params = {
         "organization_id": org_id, 
@@ -175,7 +157,7 @@ def fetch_zoho_data_last_15_days():
     if "purchasereceives" not in pr_res:
         raise Exception(f"Zoho Purchase Receives API error: {pr_res}")
 
-    df_po = pd.DataFrame(detailed_pos)
+    df_po = pd.DataFrame(po_list)
     df_pr = pd.DataFrame(pr_res.get("purchasereceives", []))
 
     return df_po, df_pr
@@ -198,7 +180,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Fetch Last 15 Days Data from Zoho", type="primary"):
         try:
-            with st.spinner("Fetching last 15 days of PO & PR data from Zoho APIs..."):
+            with st.spinner("Fetching live PO & PR data from Zoho APIs..."):
                 df_po_raw, df_pr_raw = fetch_zoho_data_last_15_days()
                 st.session_state["raw_po"] = df_po_raw
                 st.session_state["raw_pr"] = df_pr_raw
@@ -228,7 +210,7 @@ if df_po_raw is not None and df_pr_raw is not None:
             df_pr.columns = df_pr.columns.str.strip()
 
             po_num_col = find_first_existing_col(df_po, ['purchaseorder_number', 'Purchase Order Number', 'PO Number', 'purchaseorder_no'])
-            po_qty_col = find_first_existing_col(df_po, ['total_quantity', 'quantity', 'QuantityOrdered', 'Quantity', 'quantity_ordered'])
+            po_qty_col = find_first_existing_col(df_po, ['quantity', 'total_quantity', 'QuantityOrdered', 'Quantity', 'quantity_ordered', 'total'])
 
             pr_no_col = find_first_existing_col(df_pr, ['purchasereceive_number', 'receive_number', 'Receive Number', 'PR Number'])
             qty_pr_col = find_first_existing_col(df_pr, ['quantity', 'quantity_received', 'Quantity Received', 'total_quantity', 'Quantity'])
