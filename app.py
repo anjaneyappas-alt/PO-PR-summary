@@ -83,7 +83,7 @@ st.markdown("""
 
 st.title("📊 PO vs PR Excel View")
 
-# Helper for robust column lookup (Placed at top so functions below can use it)
+# Helper for robust column lookup
 def find_first_existing_col(df, candidates, default=None):
     for col in candidates:
         if col in df.columns:
@@ -143,20 +143,20 @@ def fetch_single_po_details(po_id, headers, domain, org_id):
         pass
     return None
 
-def fetch_zoho_data_last_15_days():
+def fetch_zoho_data_last_30_days():
     access_token = get_zoho_access_token()
     org_id = st.secrets["zoho"]["organization_id"]
     domain = st.secrets["zoho"].get("domain", "zoho.in")
 
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
-    date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+    date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     date_90_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-    # 1. Fetch PRs from last 15 days first
+    # 1. Fetch PRs from last 30 days
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
     pr_params = {
         "organization_id": org_id, 
-        "date_after": date_15_days_ago,
+        "date_after": date_30_days_ago,
         "sort_column": "created_time",
         "sort_order": "D"
     }
@@ -172,7 +172,7 @@ def fetch_zoho_data_last_15_days():
     po_ref_col = find_first_existing_col(df_pr, ['purchaseorder_number', 'PO Number', 'po_number', 'purchaseorder_no'])
     target_po_numbers = set(df_pr[po_ref_col].dropna().unique()) if po_ref_col in df_pr.columns else set()
 
-    # 2. Fetch POs list (90-day window)
+    # 2. Fetch POs list (90-day window to catch active POs)
     po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
     po_params = {
         "organization_id": org_id, 
@@ -225,13 +225,13 @@ if data_source == "Upload Files":
 
 else:
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 Fetch Last 15 Days Data from Zoho", type="primary"):
+    if st.button("🔄 Fetch Last 1 Month Data from Zoho", type="primary"):
         try:
-            with st.spinner("Fetching live PO & PR line-item data from Zoho..."):
-                df_po_raw, df_pr_raw = fetch_zoho_data_last_15_days()
+            with st.spinner("Fetching 1 month of live PO & PR line-item data from Zoho..."):
+                df_po_raw, df_pr_raw = fetch_zoho_data_last_30_days()
                 st.session_state["raw_po"] = df_po_raw
                 st.session_state["raw_pr"] = df_pr_raw
-                st.success("Successfully fetched live data from Zoho!")
+                st.success("Successfully fetched 1 month of live data from Zoho!")
         except Exception as e:
             st.error(f"Zoho API Error: {e}")
 
