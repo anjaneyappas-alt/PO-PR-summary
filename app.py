@@ -1,11 +1,3 @@
-<ElicitationsGroup>
-The reason `PO Qty` is showing `0` across the entire table is because the list endpoint (`/inventory/v1/purchaseorders`) does **not** return a field named `quantity` or `total_quantity` in the summary list. 
-
-In Zoho Inventory API, purchase order quantities exist inside `quantity_ordered` at the list level or within the line items array. When we stripped out `total`, `po_qty_col` evaluated to `None`, resulting in 0 for all POs.
-
-Here is the complete `app.py` script fixed with fallback line-item quantity calculation and extended 90-day lookback window:
-
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
