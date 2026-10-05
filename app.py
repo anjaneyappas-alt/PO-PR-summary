@@ -1,7 +1,3 @@
-<ElicitationsGroup>
-Here is the clean `app.py` code without any XML tags at the top so it runs without syntax errors:
-
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
