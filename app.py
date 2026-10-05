@@ -4,6 +4,7 @@ import numpy as np
 import io
 import requests
 import concurrent.futures
+import time
 from datetime import datetime, timedelta
 
 import openpyxl
@@ -122,20 +123,39 @@ def get_zoho_access_token():
     else:
         raise Exception(f"Failed to refresh Zoho Token: {res_data}")
 
-def fetch_po_line_item_quantity(po_id, org_id, domain, access_token):
+def fetch_po_line_item_quantity(po_id, org_id, domain, access_token, max_retries=4):
     """The bulk 'List Purchase Orders' endpoint does not include ordered
     quantity (it only has monetary totals like 'total'), so quantity has to
-    be read from each PO's line_items via the single-record detail endpoint."""
+    be read from each PO's line_items via the single-record detail endpoint.
+
+    With ~37 of these detail calls fired close together, a handful can get
+    rate-limited (HTTP 429) or momentarily error out, which used to be
+    swallowed and silently reported as 0. Retry with backoff first, and only
+    fall back to 0 (flagging it as failed) once retries are exhausted."""
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     detail_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
     params = {"organization_id": org_id}
-    try:
-        res = requests.get(detail_url, headers=headers, params=params, timeout=20).json()
-        line_items = res.get("purchaseorder", {}).get("line_items", [])
-        total_qty = sum(float(li.get("quantity", 0) or 0) for li in line_items)
-        return po_id, total_qty
-    except Exception:
-        return po_id, 0
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(detail_url, headers=headers, params=params, timeout=20)
+            if resp.status_code == 429:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            data = resp.json()
+            po = data.get("purchaseorder")
+            if po is None:
+                # API returned an error payload (rate limit, transient 5xx, etc.)
+                # instead of the purchase order record - back off and retry.
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            line_items = po.get("line_items", [])
+            total_qty = sum(float(li.get("quantity", 0) or 0) for li in line_items)
+            return po_id, total_qty, True
+        except Exception:
+            time.sleep(1.0 * (attempt + 1))
+
+    return po_id, 0, False
 
 
 def fetch_zoho_data_last_15_days():
@@ -162,21 +182,31 @@ def fetch_zoho_data_last_15_days():
     po_list = po_res.get("purchaseorders", [])
 
     # The list endpoint doesn't return ordered quantity, so fetch each PO's
-    # line items in parallel and attach the summed quantity as 'quantity'.
+    # line items (with retries) and attach the summed quantity as 'quantity'.
+    # Concurrency is kept modest to avoid tripping Zoho's rate limit.
     po_ids = [po.get("purchaseorder_id") for po in po_list if po.get("purchaseorder_id")]
     qty_by_po_id = {}
+    failed_po_ids = []
     if po_ids:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             futures = [
                 executor.submit(fetch_po_line_item_quantity, po_id, org_id, domain, access_token)
                 for po_id in po_ids
             ]
             for future in concurrent.futures.as_completed(futures):
-                po_id, qty = future.result()
+                po_id, qty, ok = future.result()
                 qty_by_po_id[po_id] = qty
+                if not ok:
+                    failed_po_ids.append(po_id)
 
     for po in po_list:
         po["quantity"] = qty_by_po_id.get(po.get("purchaseorder_id"), 0)
+
+    failed_po_numbers = [
+        po.get("purchaseorder_number", po.get("purchaseorder_id"))
+        for po in po_list
+        if po.get("purchaseorder_id") in failed_po_ids
+    ]
 
     # Fast bulk fetch for PRs
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
@@ -194,7 +224,7 @@ def fetch_zoho_data_last_15_days():
     df_po = pd.DataFrame(po_list)
     df_pr = pd.DataFrame(pr_res.get("purchasereceives", []))
 
-    return df_po, df_pr
+    return df_po, df_pr, failed_po_numbers
 
 
 # Data Input Handling
@@ -215,10 +245,17 @@ else:
     if st.button("🔄 Fetch Last 15 Days Data from Zoho", type="primary"):
         try:
             with st.spinner("Fetching live PO & PR data from Zoho APIs..."):
-                df_po_raw, df_pr_raw = fetch_zoho_data_last_15_days()
+                df_po_raw, df_pr_raw, failed_po_numbers = fetch_zoho_data_last_15_days()
                 st.session_state["raw_po"] = df_po_raw
                 st.session_state["raw_pr"] = df_pr_raw
+                st.session_state["failed_po_numbers"] = failed_po_numbers
                 st.success("Successfully fetched live data from Zoho!")
+                if failed_po_numbers:
+                    st.warning(
+                        "⚠️ Could not fetch PO Qty for these purchase orders even after "
+                        "retries (showing as 0 below) - click Fetch again to retry them: "
+                        + ", ".join(str(n) for n in failed_po_numbers)
+                    )
         except Exception as e:
             st.error(f"Zoho API Error: {e}")
 
