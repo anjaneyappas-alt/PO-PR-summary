@@ -1,9 +1,3 @@
-<ElicitationsGroup>
-The button isn't showing up because it was tucked inside the `else:` block of the data handler. When "Live Zoho API Sync" is selected initially, it needs to render the fetch button directly on the page so you can click it!
-
-Here is the exact code fix. Copy and paste this directly into your `app.py` file on GitHub:
-
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
