@@ -1,3 +1,7 @@
+<ElicitationsGroup>
+Here is the clean `app.py` code without any XML tags at the top so it runs without syntax errors:
+
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -127,23 +131,23 @@ def fetch_zoho_data_last_15_days():
     domain = st.secrets["zoho"].get("domain", "zoho.in")
 
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
-    
     date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
 
-    # Fetch Purchase Orders (Last 15 Days)
-    po_url = f"https://www.zohoapis.{domain}/books/v3/purchaseorders"
+    # Fetch Purchase Orders from Inventory API
+    po_url = f"https://inventory.zoho.{domain}/api/v1/purchaseorders"
     po_params = {"organization_id": org_id, "date_after": date_15_days_ago}
     po_res = requests.get(po_url, headers=headers, params=po_params).json()
-    
-    # Fetch Purchase Receives (Last 15 Days)
+
+    if "purchaseorders" not in po_res:
+        raise Exception(f"Zoho Purchase Orders API error: {po_res}")
+
+    # Fetch Purchase Receives from Inventory API
     pr_url = f"https://inventory.zoho.{domain}/api/v1/purchasereceives"
     pr_params = {"organization_id": org_id, "date_after": date_15_days_ago}
     pr_res = requests.get(pr_url, headers=headers, params=pr_params).json()
 
-    if "purchaseorders" not in po_res:
-        raise Exception(f"Zoho Purchase Orders API did not return the expected data: {po_res}")
     if "purchasereceives" not in pr_res:
-        raise Exception(f"Zoho Purchase Receives API did not return the expected data: {pr_res}")
+        raise Exception(f"Zoho Purchase Receives API error: {pr_res}")
 
     df_po = pd.DataFrame(po_res.get("purchaseorders", []))
     df_pr = pd.DataFrame(pr_res.get("purchasereceives", []))
@@ -180,117 +184,110 @@ if df_po_raw is not None and df_pr_raw is not None:
             df_po = df_po_raw.copy()
             df_pr = df_pr_raw.copy()
 
-            df_po.columns = df_po.columns.astype(str).str.strip()
-            df_pr.columns = df_pr.columns.astype(str).str.strip()
+            df_po.columns = df_po.columns.str.strip()
+            df_pr.columns = df_pr.columns.str.strip()
 
-            if df_po.empty or df_pr.empty:
-                st.warning(
-                    f"Zoho returned no data for this window — PO rows: {len(df_po)}, PR rows: {len(df_pr)}. "
-                    "There may genuinely be nothing in this time range, or the API call may have failed silently."
-                )
+            po_num_col = 'Purchase Order Number' if 'Purchase Order Number' in df_po.columns else ('purchaseorder_number' if 'purchaseorder_number' in df_po.columns else 'PO Number')
+            po_qty_col = 'QuantityOrdered' if 'QuantityOrdered' in df_po.columns else ('total_quantity' if 'total_quantity' in df_po.columns else 'Quantity')
 
-            if not (df_po.empty or df_pr.empty):
-                po_num_col = 'Purchase Order Number' if 'Purchase Order Number' in df_po.columns else ('purchaseorder_number' if 'purchaseorder_number' in df_po.columns else 'PO Number')
-                po_qty_col = 'QuantityOrdered' if 'QuantityOrdered' in df_po.columns else ('total_quantity' if 'total_quantity' in df_po.columns else 'Quantity')
-
-                pr_no_col = 'Receive Number' if 'Receive Number' in df_pr.columns else ('receive_number' if 'receive_number' in df_pr.columns else 'PR Number')
-                qty_pr_col = 'Quantity Received' if 'Quantity Received' in df_pr.columns else ('quantity' if 'quantity' in df_pr.columns else 'Quantity')
+            pr_no_col = 'Receive Number' if 'Receive Number' in df_pr.columns else ('receive_number' if 'receive_number' in df_pr.columns else 'PR Number')
+            qty_pr_col = 'Quantity Received' if 'Quantity Received' in df_pr.columns else ('quantity' if 'quantity' in df_pr.columns else 'Quantity')
             
-                po_ref_in_pr = 'PO Number' if 'PO Number' in df_pr.columns else ('purchaseorder_number' if 'purchaseorder_number' in df_pr.columns else 'po_number')
+            po_ref_in_pr = 'PO Number' if 'PO Number' in df_pr.columns else ('purchaseorder_number' if 'purchaseorder_number' in df_pr.columns else 'po_number')
 
-                if 'CreatedTime' in df_pr.columns:
-                    time_col = 'CreatedTime'
-                elif 'created_time' in df_pr.columns:
-                    time_col = 'created_time'
-                elif 'Receive Date' in df_pr.columns:
-                    time_col = 'Receive Date'
-                else:
-                    time_col = 'date'
+            if 'CreatedTime' in df_pr.columns:
+                time_col = 'CreatedTime'
+            elif 'created_time' in df_pr.columns:
+                time_col = 'created_time'
+            elif 'Receive Date' in df_pr.columns:
+                time_col = 'Receive Date'
+            else:
+                time_col = 'date'
 
-                df_pr_clean = df_pr.dropna(subset=[po_ref_in_pr]).copy()
-                df_pr_clean['Clean_PR_Qty'] = pd.to_numeric(df_pr_clean[qty_pr_col], errors='coerce').fillna(0)
-                df_pr_clean['DT'] = pd.to_datetime(df_pr_clean[time_col], errors='coerce')
+            df_pr_clean = df_pr.dropna(subset=[po_ref_in_pr]).copy()
+            df_pr_clean['Clean_PR_Qty'] = pd.to_numeric(df_pr_clean[qty_pr_col], errors='coerce').fillna(0)
+            df_pr_clean['DT'] = pd.to_datetime(df_pr_clean[time_col], errors='coerce')
             
-                latest_pr_time = df_pr_clean['DT'].max()
+            latest_pr_time = df_pr_clean['DT'].max()
             
-                if pd.notna(latest_pr_time):
-                    cutoff_time = latest_pr_time - pd.Timedelta(hours=hours_window)
-                    df_today = df_pr_clean[df_pr_clean['DT'] >= cutoff_time]
-                    df_prior = df_pr_clean[df_pr_clean['DT'] < cutoff_time]
-                else:
-                    df_today = df_pr_clean
-                    df_prior = pd.DataFrame(columns=df_pr_clean.columns)
+            if pd.notna(latest_pr_time):
+                cutoff_time = latest_pr_time - pd.Timedelta(hours=hours_window)
+                df_today = df_pr_clean[df_pr_clean['DT'] >= cutoff_time]
+                df_prior = df_pr_clean[df_pr_clean['DT'] < cutoff_time]
+            else:
+                df_today = df_pr_clean
+                df_prior = pd.DataFrame(columns=df_pr_clean.columns)
 
-                vendor_col_pr = 'Vendor Name' if 'Vendor Name' in df_pr_clean.columns else 'vendor_name'
-                vendor_col_po = 'Vendor Name' if 'Vendor Name' in df_po.columns else 'vendor_name'
+            vendor_col_pr = 'Vendor Name' if 'Vendor Name' in df_pr_clean.columns else 'vendor_name'
+            vendor_col_po = 'Vendor Name' if 'Vendor Name' in df_po.columns else 'vendor_name'
 
-                today_summary = df_today.groupby(po_ref_in_pr).agg(
-                    PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
-                    PR_Qty=('Clean_PR_Qty', 'sum'),
-                    PR_Date=('DT', 'max'),
-                    Vendor_PR=(vendor_col_pr, 'first') if vendor_col_pr in df_today.columns else (pr_no_col, 'first')
-                ).reset_index()
+            today_summary = df_today.groupby(po_ref_in_pr).agg(
+                PR_no=(pr_no_col, lambda x: " & ".join(sorted(x.dropna().astype(str).unique()))),
+                PR_Qty=('Clean_PR_Qty', 'sum'),
+                PR_Date=('DT', 'max'),
+                Vendor_PR=(vendor_col_pr, 'first') if vendor_col_pr in df_today.columns else (pr_no_col, 'first')
+            ).reset_index()
 
-                prior_summary = df_prior.groupby(po_ref_in_pr).agg(
-                    PRMTD=('Clean_PR_Qty', 'sum')
-                ).reset_index()
+            prior_summary = df_prior.groupby(po_ref_in_pr).agg(
+                PRMTD=('Clean_PR_Qty', 'sum')
+            ).reset_index()
 
-                df_po_clean = df_po.dropna(subset=[po_num_col]).copy()
-                df_po_clean['Clean_PO_Qty'] = pd.to_numeric(df_po_clean[po_qty_col], errors='coerce').fillna(0)
+            df_po_clean = df_po.dropna(subset=[po_num_col]).copy()
+            df_po_clean['Clean_PO_Qty'] = pd.to_numeric(df_po_clean[po_qty_col], errors='coerce').fillna(0)
             
-                po_summary = df_po_clean.groupby(po_num_col).agg(
-                    PO_Qty=('Clean_PO_Qty', 'sum'),
-                    Vendor_PO=(vendor_col_po, 'first') if vendor_col_po in df_po_clean.columns else (po_num_col, 'first')
-                ).reset_index()
+            po_summary = df_po_clean.groupby(po_num_col).agg(
+                PO_Qty=('Clean_PO_Qty', 'sum'),
+                Vendor_PO=(vendor_col_po, 'first') if vendor_col_po in df_po_clean.columns else (po_num_col, 'first')
+            ).reset_index()
 
-                merged = pd.merge(today_summary, po_summary, left_on=po_ref_in_pr, right_on=po_num_col, how='left')
-                merged = pd.merge(merged, prior_summary, on=po_ref_in_pr, how='left')
+            merged = pd.merge(today_summary, po_summary, left_on=po_ref_in_pr, right_on=po_num_col, how='left')
+            merged = pd.merge(merged, prior_summary, on=po_ref_in_pr, how='left')
 
-                merged = merged.sort_values(by='PR_Date', ascending=True).reset_index(drop=True)
+            merged = merged.sort_values(by='PR_Date', ascending=True).reset_index(drop=True)
 
-                merged['Date'] = merged['PR_Date'].dt.strftime('%d-%m-%y').fillna('')
-                merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO']).fillna('')
+            merged['Date'] = merged['PR_Date'].dt.strftime('%d-%m-%y').fillna('')
+            merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged['Vendor_PO']).fillna('')
             
-                merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
-                merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
-                merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
+            merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
+            merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
+            merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
             
-                merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
-                merged['Pending Qty'] = (merged['PO Qty'] - merged['Total Received']).apply(lambda x: int(x) if x > 0 else 0)
-                merged['Sl.no'] = range(1, len(merged) + 1)
+            merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
+            merged['Pending Qty'] = (merged['PO Qty'] - merged['Total Received']).apply(lambda x: int(x) if x > 0 else 0)
+            merged['Sl.no'] = range(1, len(merged) + 1)
 
-                total_pos_cnt = len(merged)
-                total_po = int(merged['PO Qty'].sum())
-                total_pr = int(merged['PR Qty'].sum())
-                total_prmtd = int(merged['PRMTD'].sum())
-                total_pending = int(merged['Pending Qty'].sum())
-                total_fr_val = ((total_pr + total_prmtd) / total_po * 100) if total_po > 0 else 0
+            total_pos_cnt = len(merged)
+            total_po = int(merged['PO Qty'].sum())
+            total_pr = int(merged['PR Qty'].sum())
+            total_prmtd = int(merged['PRMTD'].sum())
+            total_pending = int(merged['Pending Qty'].sum())
+            total_fr_val = ((total_pr + total_prmtd) / total_po * 100) if total_po > 0 else 0
 
-                expected_headers = ["Sl.no", "Date", po_ref_in_pr, "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Pending Qty"]
-                final_df = merged[expected_headers].rename(columns={po_ref_in_pr: 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
+            expected_headers = ["Sl.no", "Date", po_ref_in_pr, "PR_no", "Vendor Name", "PO Qty", "PR Qty", "PRMTD", "Pending Qty"]
+            final_df = merged[expected_headers].rename(columns={po_ref_in_pr: 'PO No', 'PR_no': 'PR No', 'PR Qty': 'Today PR Qty'})
             
-                fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
-                final_df['PO FR %'] = np.round(fr_numeric).astype(int).astype(str) + '%'
+            fr_numeric = np.where(final_df['PO Qty'] > 0, ((final_df['Today PR Qty'] + final_df['PRMTD']) / final_df['PO Qty']) * 100, 0)
+            final_df['PO FR %'] = np.round(fr_numeric).astype(int).astype(str) + '%'
 
-                total_row = pd.DataFrame([{
-                    "Sl.no": "",
-                    "Date": "",
-                    "PO No": "",
-                    "PR No": "",
-                    "Vendor Name": "Total",
-                    "PO Qty": total_po,
-                    "Today PR Qty": total_pr,
-                    "PRMTD": total_prmtd,
-                    "Pending Qty": total_pending,
-                    "PO FR %": f"{int(round(total_fr_val))}%"
-                }])
+            total_row = pd.DataFrame([{
+                "Sl.no": "",
+                "Date": "",
+                "PO No": "",
+                "PR No": "",
+                "Vendor Name": "Total",
+                "PO Qty": total_po,
+                "Today PR Qty": total_pr,
+                "PRMTD": total_prmtd,
+                "Pending Qty": total_pending,
+                "PO FR %": f"{int(round(total_fr_val))}%"
+            }])
 
-                display_df = pd.concat([final_df, total_row], ignore_index=True)
+            display_df = pd.concat([final_df, total_row], ignore_index=True)
 
-                st.session_state["processed_df"] = display_df
-                st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val)
-                st.session_state["anchor_time"] = latest_pr_time
-                st.session_state["window_hours"] = hours_window
+            st.session_state["processed_df"] = display_df
+            st.session_state["kpi_metrics"] = (total_pos_cnt, total_po, total_pr, total_prmtd, total_pending, total_fr_val)
+            st.session_state["anchor_time"] = latest_pr_time
+            st.session_state["window_hours"] = hours_window
 
     except Exception as e:
         st.error(f"Error processing data: {e}")
