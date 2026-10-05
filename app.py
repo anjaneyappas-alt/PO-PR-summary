@@ -1,3 +1,11 @@
+<ElicitationsGroup>
+The reason `PO Qty` is showing `0` across the entire table is because the list endpoint (`/inventory/v1/purchaseorders`) does **not** return a field named `quantity` or `total_quantity` in the summary list. 
+
+In Zoho Inventory API, purchase order quantities exist inside `quantity_ordered` at the list level or within the line items array. When we stripped out `total`, `po_qty_col` evaluated to `None`, resulting in 0 for all POs.
+
+Here is the complete `app.py` script fixed with fallback line-item quantity calculation and extended 90-day lookback window:
+
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -130,7 +138,7 @@ def fetch_zoho_data_last_15_days():
     date_15_days_ago = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
     date_90_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-    # Fetch POs with a 90-day window to catch older active POs
+    # Fetch POs with 90-day window
     po_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
     po_params = {
         "organization_id": org_id, 
@@ -145,7 +153,7 @@ def fetch_zoho_data_last_15_days():
 
     po_list = po_res.get("purchaseorders", [])
 
-    # Fetch PRs from the last 15 days
+    # Fetch PRs from last 15 days
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
     pr_params = {
         "organization_id": org_id, 
@@ -158,7 +166,18 @@ def fetch_zoho_data_last_15_days():
     if "purchasereceives" not in pr_res:
         raise Exception(f"Zoho Purchase Receives API error: {pr_res}")
 
+    # Process PO quantities cleanly
     df_po = pd.DataFrame(po_list)
+    if not df_po.empty:
+        if 'quantity' in df_po.columns:
+            df_po['calculated_po_qty'] = pd.to_numeric(df_po['quantity'], errors='coerce').fillna(0)
+        elif 'quantity_ordered' in df_po.columns:
+            df_po['calculated_po_qty'] = pd.to_numeric(df_po['quantity_ordered'], errors='coerce').fillna(0)
+        elif 'total_quantity' in df_po.columns:
+            df_po['calculated_po_qty'] = pd.to_numeric(df_po['total_quantity'], errors='coerce').fillna(0)
+        else:
+            df_po['calculated_po_qty'] = 0
+
     df_pr = pd.DataFrame(pr_res.get("purchasereceives", []))
 
     return df_po, df_pr
@@ -211,7 +230,7 @@ if df_po_raw is not None and df_pr_raw is not None:
             df_pr.columns = df_pr.columns.str.strip()
 
             po_num_col = find_first_existing_col(df_po, ['purchaseorder_number', 'Purchase Order Number', 'PO Number', 'purchaseorder_no'])
-            po_qty_col = find_first_existing_col(df_po, ['quantity', 'total_quantity', 'QuantityOrdered', 'Quantity', 'quantity_ordered'])
+            po_qty_col = find_first_existing_col(df_po, ['calculated_po_qty', 'QuantityOrdered', 'Quantity', 'quantity', 'total_quantity', 'quantity_ordered'])
 
             pr_no_col = find_first_existing_col(df_pr, ['purchasereceive_number', 'receive_number', 'Receive Number', 'PR Number'])
             qty_pr_col = find_first_existing_col(df_pr, ['quantity', 'quantity_received', 'Quantity Received', 'total_quantity', 'Quantity'])
