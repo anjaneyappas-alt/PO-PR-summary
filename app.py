@@ -388,4 +388,107 @@ if "processed_df" in st.session_state:
     st.table(styled_df)
 
     def generate_excel_file(df):
-        wb = open
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PO vs PR Summary"
+
+        # Show Grid Lines in Excel
+        ws.views.sheetView[0].showGridLines = True
+
+        # Fills (Matching exact UI palette)
+        header_fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        zebra_fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        total_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+        pending_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+        # Fonts
+        header_font = Font(name="Segoe UI", size=11, bold=True, color="000000")
+        regular_font = Font(name="Segoe UI", size=10, color="000000")
+        bold_font = Font(name="Segoe UI", size=10, bold=True, color="000000")
+        pending_font = Font(name="Segoe UI", size=10, bold=True, color="856404")
+
+        # Borders
+        header_border_side = Side(border_style="thin", color="BFBFBF")
+        data_border_side = Side(border_style="thin", color="D9D9D9")
+        
+        header_border = Border(left=header_border_side, right=header_border_side, top=header_border_side, bottom=header_border_side)
+        data_border = Border(left=data_border_side, right=data_border_side, top=data_border_side, bottom=data_border_side)
+        
+        thick_top = Side(border_style="medium", color="000000")
+        double_bottom = Side(border_style="double", color="000000")
+        total_border = Border(left=data_border_side, right=data_border_side, top=thick_top, bottom=double_bottom)
+
+        # Alignments
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+
+        # Header Row
+        headers = list(df.columns)
+        ws.append(headers)
+
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = align_center
+            cell.border = header_border
+
+        # Data Rows
+        for row_idx, row in df.iterrows():
+            row_data = list(row)
+            ws.append(row_data)
+            current_row = ws.max_row
+            is_total_row = str(row.get('Vendor Name', '')) == 'Total'
+            is_even_row = (row_idx % 2 == 1)
+
+            for col_num, val in enumerate(row_data, 1):
+                cell = ws.cell(row=current_row, column=col_num)
+                col_name = headers[col_num - 1]
+
+                cell.border = total_border if is_total_row else data_border
+                cell.font = bold_font if is_total_row else regular_font
+
+                if is_total_row:
+                    cell.fill = total_fill
+                elif col_name == "Pending Qty" and isinstance(val, (int, float)) and val > 0:
+                    cell.fill = pending_fill
+                    cell.font = pending_font
+                else:
+                    cell.fill = zebra_fill if is_even_row else white_fill
+
+                if col_name in ["Sl.no", "Date", "PO No", "PR No", "PO FR %"]:
+                    cell.alignment = align_center
+                elif col_name in ["PO Qty", "Today PR Qty", "PRMTD", "Pending Qty"]:
+                    cell.alignment = align_right
+                    if isinstance(val, (int, float)):
+                        cell.number_format = '#,##0'
+                else:
+                    cell.alignment = align_left
+
+        # Dynamic Column Auto-width calculation
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_str = str(cell.value or '')
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return output
+
+    # Download Button Section
+    st.markdown("<br>", unsafe_allow_html=True)
+    excel_data = generate_excel_file(display_df)
+    st.download_button(
+        label="📥 Download Excel Report",
+        data=excel_data,
+        file_name=f"PO_vs_PR_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
