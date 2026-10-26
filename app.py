@@ -90,6 +90,16 @@ def find_first_existing_col(df, candidates, default=None):
             return col
     return default
 
+def detect_damage_reason(pr_number, notes=""):
+    combined = f"{pr_number} {notes}".lower()
+    if "near expiry" in combined or "expiry" in combined:
+        return "near expiry"
+    elif "short" in combined or "shortage" in combined:
+        return "Shortage"
+    elif "damage" in combined:
+        return "Damage"
+    return "Damage"
+
 # Control Panel
 control_col1, control_col2 = st.columns([1, 2])
 with control_col1:
@@ -130,7 +140,6 @@ def get_zoho_access_token():
         raise Exception(f"Failed to refresh Zoho Token: {res_data}")
 
 def fetch_po_by_number(po_number, headers, domain, org_id):
-    """Directly fetch a PO by its exact number and calculate line-item quantities."""
     try:
         url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders"
         params = {"organization_id": org_id, "purchaseorder_number": po_number}
@@ -156,7 +165,6 @@ def fetch_po_by_number(po_number, headers, domain, org_id):
     return None
 
 def fetch_single_pr_details(pr_id, headers, domain, org_id):
-    """Fetch individual PR to retrieve item-level line items (SKU, Item Name, etc.)."""
     try:
         url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives/{pr_id}"
         res = requests.get(url, headers=headers, params={"organization_id": org_id}).json()
@@ -174,7 +182,6 @@ def fetch_zoho_data_live():
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    # 1. Fetch PRs from last 30 days
     pr_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives"
     pr_params = {
         "organization_id": org_id, 
@@ -190,11 +197,9 @@ def fetch_zoho_data_live():
     pr_list = pr_res.get("purchasereceives", [])
     df_pr = pd.DataFrame(pr_list)
 
-    # Extract unique PO numbers referenced in PRs
     po_ref_col = find_first_existing_col(df_pr, ['purchaseorder_number', 'PO Number', 'po_number', 'purchaseorder_no'])
     unique_po_numbers = list(set(df_pr[po_ref_col].dropna().unique())) if (not df_pr.empty and po_ref_col in df_pr.columns) else []
 
-    # 2. Fetch EXACT POs directly by PO number in parallel
     detailed_pos = []
     if unique_po_numbers:
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -258,7 +263,6 @@ if df_po_raw is not None and df_pr_raw is not None:
             qty_pr_col = find_first_existing_col(df_pr, ['quantity', 'quantity_received', 'Quantity Received', 'total_quantity', 'Quantity'])
             
             po_ref_in_pr = find_first_existing_col(df_pr, ['purchaseorder_number', 'PO Number', 'po_number', 'purchaseorder_no'])
-
             time_col = find_first_existing_col(df_pr, ['created_time', 'CreatedTime', 'date', 'Receive Date'])
 
             df_pr_clean = df_pr.dropna(subset=[po_ref_in_pr]).copy() if po_ref_in_pr else df_pr.copy()
@@ -269,7 +273,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                 df_pr_clean['Clean_PR_Qty'] = 0
 
             df_pr_clean['DT'] = pd.to_datetime(df_pr_clean[time_col], errors='coerce') if time_col else pd.NaT
-            
             latest_pr_time = df_pr_clean['DT'].max() if 'DT' in df_pr_clean.columns else pd.NaT
             
             if pd.notna(latest_pr_time):
@@ -277,7 +280,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                 df_today = df_pr_clean[df_pr_clean['DT'] >= cutoff_time]
                 df_prior = df_pr_clean[df_pr_clean['DT'] < cutoff_time]
             else:
-                cutoff_time = None
                 df_today = df_pr_clean
                 df_prior = pd.DataFrame(columns=df_pr_clean.columns)
 
@@ -317,7 +319,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                 merged['Date'] = ''
 
             merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged.get('Vendor_PO', '')).fillna('')
-            
             merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
             merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
             merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
@@ -364,9 +365,10 @@ if df_po_raw is not None and df_pr_raw is not None:
             # ----------------------------------------------------
             detailed_damage_items = []
             
-            # Filter damage PRs strictly from df_today (last 15 hours)
             if not df_today.empty and pr_no_col in df_today.columns:
-                dmg_today_prs = df_today[df_today[pr_no_col].astype(str).str.contains("damage", case=False, na=False)]
+                dmg_today_prs = df_today[
+                    df_today[pr_no_col].astype(str).str.contains("damage|expiry|short", case=False, na=False)
+                ]
                 
                 if data_source == "Live Zoho API Sync" and not dmg_today_prs.empty:
                     access_token = get_zoho_access_token()
@@ -374,7 +376,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                     domain = st.secrets["zoho"].get("domain", "zoho.in")
                     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
 
-                    # Fetch line-item breakdown for only today's damage PRs
                     with ThreadPoolExecutor(max_workers=5) as executor:
                         futures = {
                             executor.submit(fetch_single_pr_details, row["purchasereceive_id"], headers, domain, org_id): row
@@ -384,21 +385,30 @@ if df_po_raw is not None and df_pr_raw is not None:
                             parent_row = futures[future]
                             pr_detail = future.result()
                             
-                            # Fallback chain to ensure Receive Number is never blank
-                            r_num = ""
+                            pr_raw_number = ""
                             if pr_detail:
-                                r_num = pr_detail.get("purchasereceive_number") or pr_detail.get("receive_number") or pr_detail.get("purchasereceive_no") or ""
-                            if not r_num:
-                                r_num = str(parent_row.get(pr_no_col, ""))
+                                pr_raw_number = pr_detail.get("purchasereceive_number") or pr_detail.get("receive_number") or pr_detail.get("purchasereceive_no") or ""
+                            if not pr_raw_number:
+                                pr_raw_number = str(parent_row.get(pr_no_col, ""))
 
                             r_date = pr_detail.get("date", parent_row.get(time_col, "")) if pr_detail else parent_row.get(time_col, "")
                             if isinstance(r_date, pd.Timestamp):
-                                r_date = r_date.strftime("%d-%m-%y")
+                                formatted_date = r_date.strftime("%d/%m/%Y")
+                            elif isinstance(r_date, str) and r_date:
+                                try:
+                                    formatted_date = pd.to_datetime(r_date).strftime("%d/%m/%Y")
+                                except:
+                                    formatted_date = r_date
+                            else:
+                                formatted_date = ""
 
                             v_name = pr_detail.get("vendor_name", parent_row.get(vendor_col_pr, "")) if pr_detail else parent_row.get(vendor_col_pr, "")
                             po_num = pr_detail.get("purchaseorder_number", parent_row.get(po_ref_in_pr, "")) if pr_detail else parent_row.get(po_ref_in_pr, "")
 
                             line_items = pr_detail.get("line_items", []) if pr_detail else []
+                            notes_text = pr_detail.get("notes", "") if pr_detail else ""
+                            item_reason = detect_damage_reason(pr_raw_number, notes_text)
+
                             if line_items:
                                 for item in line_items:
                                     qty_val = item.get("quantity", item.get("quantity_received", 0))
@@ -408,51 +418,55 @@ if df_po_raw is not None and df_pr_raw is not None:
                                         qty_clean = qty_val
 
                                     detailed_damage_items.append({
-                                        "Receive Number": r_num,
-                                        "Receive Date": r_date,
-                                        "Vendor Name": v_name,
-                                        "PO Number": po_num,
-                                        "Item Name": item.get("name", item.get("item_name", "")),
-                                        "SKU": item.get("sku", ""),
-                                        "Quantity Received": qty_clean
+                                        "Date": formatted_date,
+                                        "vendor name": v_name,
+                                        "PO NO": po_num,
+                                        "Item": item.get("name", item.get("item_name", "")),
+                                        "Qty": qty_clean,
+                                        "reason": item_reason
                                     })
                             else:
-                                # Fallback if line items are directly in the row
                                 try:
                                     qty_clean = int(round(float(parent_row.get("Clean_PR_Qty", 0))))
                                 except:
                                     qty_clean = parent_row.get("Clean_PR_Qty", 0)
 
                                 detailed_damage_items.append({
-                                    "Receive Number": r_num,
-                                    "Receive Date": r_date,
-                                    "Vendor Name": v_name,
-                                    "PO Number": po_num,
-                                    "Item Name": parent_row.get("Item Name", ""),
-                                    "SKU": parent_row.get("SKU", ""),
-                                    "Quantity Received": qty_clean
+                                    "Date": formatted_date,
+                                    "vendor name": v_name,
+                                    "PO NO": po_num,
+                                    "Item": parent_row.get("Item Name", parent_row.get("item_name", "")),
+                                    "Qty": qty_clean,
+                                    "reason": item_reason
                                 })
 
                 elif data_source == "Upload Files" and not dmg_today_prs.empty:
-                    # Direct Excel parsing
                     for _, row in dmg_today_prs.iterrows():
                         r_date = row.get(time_col, "")
                         if isinstance(r_date, pd.Timestamp):
-                            r_date = r_date.strftime("%d-%m-%y")
+                            formatted_date = r_date.strftime("%d/%m/%Y")
+                        elif isinstance(r_date, str) and r_date:
+                            try:
+                                formatted_date = pd.to_datetime(r_date).strftime("%d/%m/%Y")
+                            except:
+                                formatted_date = r_date
+                        else:
+                            formatted_date = ""
 
                         try:
                             qty_clean = int(round(float(row.get("Clean_PR_Qty", 0))))
                         except:
                             qty_clean = row.get("Clean_PR_Qty", 0)
 
+                        item_reason = detect_damage_reason(row.get(pr_no_col, ""))
+
                         detailed_damage_items.append({
-                            "Receive Number": row.get(pr_no_col, ""),
-                            "Receive Date": r_date,
-                            "Vendor Name": row.get(vendor_col_pr, ""),
-                            "PO Number": row.get(po_ref_in_pr, ""),
-                            "Item Name": row.get("Item Name", row.get("item_name", "")),
-                            "SKU": row.get("SKU", row.get("sku", "")),
-                            "Quantity Received": qty_clean
+                            "Date": formatted_date,
+                            "vendor name": row.get(vendor_col_pr, ""),
+                            "PO NO": row.get(po_ref_in_pr, ""),
+                            "Item": row.get("Item Name", row.get("item_name", "")),
+                            "Qty": qty_clean,
+                            "reason": item_reason
                         })
 
             st.session_state["raw_damage"] = pd.DataFrame(detailed_damage_items)
@@ -590,38 +604,40 @@ if "processed_df" in st.session_state:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # ==========================================
-    # --- DEDICATED DAMAGE PR DATA SECTION ---
-    # ==========================================
+    # ==============================================================
+    # --- DEDICATED DAMAGE / SHORT REPORT (USER MATCHED FORMAT) ---
+    # ==============================================================
     df_damage = st.session_state.get("raw_damage", pd.DataFrame())
     if not df_damage.empty:
         st.markdown("<br><hr>", unsafe_allow_html=True)
-        st.subheader("🚨 Damage PR Details (Item-wise)")
-        st.markdown(f"Found **{len(df_damage)}** damage record(s) flagged within the **{active_window}-Hour Window**.")
+        st.subheader("🚨 Damage / Short Details (Item-wise)")
+        st.markdown(f"Found **{len(df_damage)}** damage/short record(s) flagged within the **{active_window}-Hour Window**.")
 
-        st.table(df_damage)
+        target_cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason"]
+        df_damage_display = df_damage[[c for c in target_cols if c in df_damage.columns]]
+
+        st.table(df_damage_display)
 
         def generate_damage_excel(df_dmg):
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "Damage PR Report"
+            ws.title = "Damage Report"
             ws.views.sheetView[0].showGridLines = True
 
-            header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            zebra_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+            header_fill = PatternFill(start_color="F2DC9B", end_color="F2DC9B", fill_type="solid")
             white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
-            border_side = Side(border_style="thin", color="B0C4DE")
-            thin_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+            border_side = Side(border_style="thin", color="000000")
+            full_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
 
-            font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
-            font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
+            font_header = Font(name="Calibri", size=11, bold=True, color="000000")
+            font_regular = Font(name="Calibri", size=11, bold=False, color="000000")
 
             align_center = Alignment(horizontal="center", vertical="center")
             align_left = Alignment(horizontal="left", vertical="center")
             align_right = Alignment(horizontal="right", vertical="center")
 
-            cols = ["Receive Number", "Receive Date", "Vendor Name", "PO Number", "Item Name", "SKU", "Quantity Received"]
+            cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason"]
             existing_cols = [c for c in cols if c in df_dmg.columns]
             
             ws.append(existing_cols)
@@ -629,21 +645,21 @@ if "processed_df" in st.session_state:
                 cell = ws.cell(row=1, column=col_idx)
                 cell.fill = header_fill
                 cell.font = font_header
-                cell.border = thin_border
+                cell.border = full_border
                 cell.alignment = align_center
 
             for r_idx, row in enumerate(df_dmg[existing_cols].values, start=2):
                 ws.append(list(row))
                 for col_idx in range(1, len(existing_cols) + 1):
                     cell = ws.cell(row=r_idx, column=col_idx)
-                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
+                    cell.fill = white_fill
                     cell.font = font_regular
-                    cell.border = thin_border
+                    cell.border = full_border
 
                     col_name = existing_cols[col_idx - 1]
-                    if col_name in ["Receive Number", "Receive Date", "PO Number", "SKU"]:
+                    if col_name in ["Date", "PO NO"]:
                         cell.alignment = align_center
-                    elif col_name == "Quantity Received":
+                    elif col_name == "Qty":
                         cell.alignment = align_right
                     else:
                         cell.alignment = align_left
@@ -651,16 +667,40 @@ if "processed_df" in st.session_state:
             for col in ws.columns:
                 max_len = max(len(str(cell.value or '')) for cell in col)
                 col_letter = get_column_letter(col[0].column)
-                ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
             out = io.BytesIO()
             wb.save(out)
             return out.getvalue()
 
-        damage_excel_bytes = generate_damage_excel(df_damage)
-        st.download_button(
-            label="📥 Download Damage Report (.xlsx)",
-            data=damage_excel_bytes,
-            file_name=f"PR_Damage_Report_{active_window}h.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        btn_col1, btn_col2 = st.columns([1, 1])
+
+        with btn_col1:
+            damage_excel_bytes = generate_damage_excel(df_damage_display)
+            st.download_button(
+                label="📥 Download Damage Report (.xlsx)",
+                data=damage_excel_bytes,
+                file_name=f"Damage_Report_{active_window}h.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        with btn_col2:
+            sheet_tab_name = st.text_input("Google Sheet Tab Name:", value="Damage_Short")
+            if st.button("🚀 Push to Google Sheet (1-Click)", type="primary"):
+                try:
+                    webhook_url = st.secrets.get("google", {}).get("webhook_url", "")
+                    if not webhook_url:
+                        st.error("Please add `webhook_url` under `[google]` in Streamlit Secrets.")
+                    else:
+                        with st.spinner("Pushing to Google Sheet via Webhook..."):
+                            payload = {
+                                "sheet_name": sheet_tab_name,
+                                "rows": df_damage_display.to_dict(orient="records")
+                            }
+                            res = requests.post(webhook_url, json=payload, timeout=20)
+                            if res.status_code == 200:
+                                st.success(f"✅ Successfully exported {len(df_damage_display)} row(s) to '{sheet_tab_name}'!")
+                            else:
+                                st.error(f"Error ({res.status_code}): {res.text}")
+                except Exception as e:
+                    st.error(f"Sync error: {e}")
