@@ -482,4 +482,185 @@ if "processed_df" in st.session_state:
     st.markdown("---")
 
     def highlight_excel_cells(df):
-        styles = pd.DataFrame('', index=df.index,
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
+        for idx, row in df.iterrows():
+            if str(row['Vendor Name']) == 'Total':
+                styles.loc[idx, :] = 'background-color: #f4b084; font-weight: bold; color: black; border-top: 2px solid black; border-bottom: 2px double black'
+            else:
+                try:
+                    if float(row['Pending Qty']) > 0:
+                        styles.loc[idx, 'Pending Qty'] = 'background-color: #fff3cd; color: #856404; font-weight: bold;'
+                except (ValueError, TypeError):
+                    pass
+        return styles
+
+    styled_df = display_df.style.apply(highlight_excel_cells, axis=None)
+    st.table(styled_df)
+
+    def generate_excel_file(df):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "PO vs PR Summary"
+        ws.views.sheetView[0].showGridLines = True
+
+        header_fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        zebra_fill = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        yellow_pending_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+        orange_total_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+
+        thin_side = Side(border_style="thin", color="D9D9D9")
+        thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        
+        total_top_side = Side(border_style="thin", color="000000")
+        total_bottom_side = Side(border_style="double", color="000000")
+        total_border = Border(left=thin_side, right=thin_side, top=total_top_side, bottom=total_bottom_side)
+
+        font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
+        font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
+        font_pending = Font(name="Segoe UI", size=11, bold=True, color="856404")
+        font_total = Font(name="Segoe UI", size=11, bold=True, color="000000")
+
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+
+        headers = list(df.columns)
+        ws.append(headers)
+
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = font_header
+            cell.alignment = align_center
+            cell.border = Border(left=Side(border_style="thin", color="BFBFBF"),
+                                 right=Side(border_style="thin", color="BFBFBF"),
+                                 top=Side(border_style="thin", color="BFBFBF"),
+                                 bottom=Side(border_style="thin", color="BFBFBF"))
+
+        pending_col_idx = headers.index('Pending Qty') + 1 if 'Pending Qty' in headers else None
+
+        for r_idx, row_data in enumerate(df.values, start=2):
+            ws.append(list(row_data))
+            is_total_row = (str(row_data[headers.index('Vendor Name')]) == 'Total') if 'Vendor Name' in headers else False
+
+            for col_idx in range(1, len(headers) + 1):
+                cell = ws.cell(row=r_idx, column=col_idx)
+                val = cell.value
+
+                if is_total_row:
+                    cell.fill = orange_total_fill
+                    cell.font = font_total
+                    cell.border = total_border
+                else:
+                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
+                    cell.font = font_regular
+                    cell.border = thin_border
+
+                    if col_idx == pending_col_idx:
+                        try:
+                            if float(val) > 0:
+                                cell.fill = yellow_pending_fill
+                                cell.font = font_pending
+                        except (ValueError, TypeError):
+                            pass
+
+                if headers[col_idx - 1] in ['Sl.no', 'Date', 'PO No', 'PR No', 'PO FR %']:
+                    cell.alignment = align_center
+                elif headers[col_idx - 1] in ['Vendor Name']:
+                    cell.alignment = align_left
+                else:
+                    cell.alignment = align_right
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+        output = io.BytesIO()
+        wb.save(output)
+        return output.getvalue()
+
+    st.markdown("---")
+    excel_bytes = generate_excel_file(display_df)
+    st.download_button(
+        label="📥 Download Summary as Excel (.xlsx)",
+        data=excel_bytes,
+        file_name=f"PO_PR_Summary_{active_window}h.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # ==========================================
+    # --- DEDICATED DAMAGE PR DATA SECTION ---
+    # ==========================================
+    df_damage = st.session_state.get("raw_damage", pd.DataFrame())
+    if not df_damage.empty:
+        st.markdown("<br><hr>", unsafe_allow_html=True)
+        st.subheader("🚨 Damage PR Details (Item-wise)")
+        st.markdown(f"Found **{len(df_damage)}** damage record(s) flagged within the **{active_window}-Hour Window**.")
+
+        st.table(df_damage)
+
+        def generate_damage_excel(df_dmg):
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Damage PR Report"
+            ws.views.sheetView[0].showGridLines = True
+
+            header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            zebra_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+            white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+            border_side = Side(border_style="thin", color="B0C4DE")
+            thin_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+
+            font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
+            font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
+
+            align_center = Alignment(horizontal="center", vertical="center")
+            align_left = Alignment(horizontal="left", vertical="center")
+            align_right = Alignment(horizontal="right", vertical="center")
+
+            cols = ["Receive Number", "Receive Date", "Vendor Name", "PO Number", "Item Name", "SKU", "Quantity Received"]
+            existing_cols = [c for c in cols if c in df_dmg.columns]
+            
+            ws.append(existing_cols)
+            for col_idx in range(1, len(existing_cols) + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.fill = header_fill
+                cell.font = font_header
+                cell.border = thin_border
+                cell.alignment = align_center
+
+            for r_idx, row in enumerate(df_dmg[existing_cols].values, start=2):
+                ws.append(list(row))
+                for col_idx in range(1, len(existing_cols) + 1):
+                    cell = ws.cell(row=r_idx, column=col_idx)
+                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
+                    cell.font = font_regular
+                    cell.border = thin_border
+
+                    col_name = existing_cols[col_idx - 1]
+                    if col_name in ["Receive Number", "Receive Date", "PO Number", "SKU"]:
+                        cell.alignment = align_center
+                    elif col_name == "Quantity Received":
+                        cell.alignment = align_right
+                    else:
+                        cell.alignment = align_left
+
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or '')) for cell in col)
+                col_letter = get_column_letter(col[0].column)
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+            out = io.BytesIO()
+            wb.save(out)
+            return out.getvalue()
+
+        damage_excel_bytes = generate_damage_excel(df_damage)
+        st.download_button(
+            label="📥 Download Damage Report (.xlsx)",
+            data=damage_excel_bytes,
+            file_name=f"PR_Damage_Report_{active_window}h.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
