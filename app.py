@@ -565,4 +565,64 @@ if "processed_df" in st.session_state:
 
         def generate_damage_excel(df_dmg):
             wb = openpyxl.Workbook()
-            ws = wb.
+            ws = wb.active
+            ws.title = "Damage PR Report"
+            ws.views.sheetView[0].showGridLines = True
+
+            header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            zebra_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+            white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+            border_side = Side(border_style="thin", color="B0C4DE")
+            thin_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+
+            font_header = Font(name="Segoe UI", size=11, bold=True, color="000000")
+            font_regular = Font(name="Segoe UI", size=11, bold=False, color="000000")
+
+            align_center = Alignment(horizontal="center", vertical="center")
+            align_left = Alignment(horizontal="left", vertical="center")
+            align_right = Alignment(horizontal="right", vertical="center")
+
+            cols = ["Receive Number", "Receive Date", "Vendor Name", "PO Number", "Item Name", "SKU", "Quantity Received"]
+            existing_cols = [c for c in cols if c in df_dmg.columns]
+            
+            ws.append(existing_cols)
+            for col_idx in range(1, len(existing_cols) + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.fill = header_fill
+                cell.font = font_header
+                cell.border = thin_border
+                cell.alignment = align_center
+
+            for r_idx, row in enumerate(df_dmg[existing_cols].values, start=2):
+                ws.append(list(row))
+                for col_idx in range(1, len(existing_cols) + 1):
+                    cell = ws.cell(row=r_idx, column=col_idx)
+                    cell.fill = zebra_fill if (r_idx % 2 == 0) else white_fill
+                    cell.font = font_regular
+                    cell.border = thin_border
+
+                    col_name = existing_cols[col_idx - 1]
+                    if col_name in ["Receive Number", "Receive Date", "PO Number", "SKU"]:
+                        cell.alignment = align_center
+                    elif col_name == "Quantity Received":
+                        cell.alignment = align_right
+                    else:
+                        cell.alignment = align_left
+
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or '')) for cell in col)
+                col_letter = get_column_letter(col[0].column)
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+            out = io.BytesIO()
+            wb.save(out)
+            return out.getvalue()
+
+        damage_excel_bytes = generate_damage_excel(df_damage)
+        st.download_button(
+            label="📥 Download Damage Report (.xlsx)",
+            data=damage_excel_bytes,
+            file_name=f"PR_Damage_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
