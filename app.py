@@ -83,7 +83,6 @@ st.markdown("""
 
 st.title("📊 PO vs PR Excel View")
 
-# Helper for robust column lookup
 def find_first_existing_col(df, candidates, default=None):
     for col in candidates:
         if col in df.columns:
@@ -101,12 +100,6 @@ def detect_damage_reason(pr_number, notes=""):
     return "Damage"
 
 def classify_pr_source(attachment_names):
-    """
-    Checks attachment name:
-    - Contains 'bill' -> 'HHD'
-    - Starts with '2025', '2026', or contains 'whatsapp' -> 'Zoho'
-    - No attachment or no match -> ''
-    """
     if not attachment_names:
         return ""
     for name in attachment_names:
@@ -131,8 +124,7 @@ with control_col2:
 
 hours_window = 15 if selected_window == "Last 15 Hours" else 24
 
-
-# --- ZOHO API HELPER FUNCTIONS ---
+# --- ZOHO API HELPERS ---
 def get_zoho_access_token():
     client_id = st.secrets["zoho"]["client_id"]
     client_secret = st.secrets["zoho"]["client_secret"]
@@ -146,9 +138,7 @@ def get_zoho_access_token():
         "client_secret": client_secret,
         "grant_type": "refresh_token"
     }
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     response = requests.post(url, data=payload, headers=headers)
     res_data = response.json()
     if "access_token" in res_data:
@@ -162,7 +152,6 @@ def fetch_po_by_number(po_number, headers, domain, org_id):
         params = {"organization_id": org_id, "purchaseorder_number": po_number}
         res = requests.get(url, headers=headers, params=params).json()
         po_list = res.get("purchaseorders", [])
-        
         if po_list:
             po_id = po_list[0].get("purchaseorder_id")
             single_url = f"https://www.zohoapis.{domain}/inventory/v1/purchaseorders/{po_id}"
@@ -182,19 +171,22 @@ def fetch_po_by_number(po_number, headers, domain, org_id):
     return None
 
 def fetch_single_pr_details(pr_id, headers, domain, org_id):
-    """Fetch individual PR with line items and attachment document names."""
     try:
         url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives/{pr_id}"
         res = requests.get(url, headers=headers, params={"organization_id": org_id}).json()
         if "purchasereceive" in res:
             pr_data = res["purchasereceive"]
-            # Extract document attachment filenames if present
             attachments = []
             for doc in pr_data.get("documents", []):
                 if isinstance(doc, dict) and "file_name" in doc:
                     attachments.append(doc["file_name"])
                 elif isinstance(doc, str):
                     attachments.append(doc)
+            for att in pr_data.get("attachments", []):
+                if isinstance(att, dict) and "file_name" in att:
+                    attachments.append(att["file_name"])
+                elif isinstance(att, str):
+                    attachments.append(att)
             pr_data["attachment_names"] = attachments
             return pr_data
     except Exception:
@@ -205,7 +197,6 @@ def fetch_zoho_data_live():
     access_token = get_zoho_access_token()
     org_id = st.secrets["zoho"]["organization_id"]
     domain = st.secrets["zoho"].get("domain", "zoho.in")
-
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
     date_30_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
@@ -217,7 +208,6 @@ def fetch_zoho_data_live():
         "sort_order": "D"
     }
     pr_res = requests.get(pr_url, headers=headers, params=pr_params).json()
-
     if "purchasereceives" not in pr_res:
         raise Exception(f"Zoho Purchase Receives API error: {pr_res}")
 
@@ -240,9 +230,7 @@ def fetch_zoho_data_live():
                     detailed_pos.append(result)
 
     df_po = pd.DataFrame(detailed_pos) if detailed_pos else pd.DataFrame()
-
     return df_po, df_pr
-
 
 # Data Input Handling
 df_po_raw, df_pr_raw = None, None
@@ -256,7 +244,6 @@ if data_source == "Upload Files":
     if po_file and pr_file:
         df_po_raw = pd.read_excel(po_file)
         df_pr_raw = pd.read_excel(pr_file)
-
 else:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Fetch Live Data from Zoho", type="primary"):
@@ -273,10 +260,10 @@ else:
         df_po_raw = st.session_state["raw_po"]
         df_pr_raw = st.session_state["raw_pr"]
 
-# Process Main Reconciliation Data
+# Main Processing
 if df_po_raw is not None and df_pr_raw is not None:
     try:
-        with st.spinner("Processing reconciliation..."):
+        with st.spinner("Processing reconciliation & inspecting damage notes..."):
             df_po = df_po_raw.copy()
             df_pr = df_pr_raw.copy()
 
@@ -389,99 +376,80 @@ if df_po_raw is not None and df_pr_raw is not None:
             st.session_state["window_hours"] = hours_window
 
             # ----------------------------------------------------
-            # DAMAGE PR LINE-ITEM EXTRACTION (WINDOW FILTERED)
-            # Checks BOTH Notes and Receive Number
+            # DAMAGE PR LINE-ITEM EXTRACTION (ACCURATE PARALLEL FETCH)
             # ----------------------------------------------------
             detailed_damage_items = []
             
             if not df_today.empty:
-                # Mask: Check if 'damage', 'short', or 'expired' is in Receive Number OR Notes
-                mask_pr_name = df_today[pr_no_col].astype(str).str.contains("damage|expiry|expired|short", case=False, na=False) if pr_no_col in df_today.columns else pd.Series(False, index=df_today.index)
-                mask_notes = df_today[notes_col].astype(str).str.contains("damage|damaged|expiry|expired|short|shortage", case=False, na=False) if (notes_col and notes_col in df_today.columns) else pd.Series(False, index=df_today.index)
-                
-                dmg_today_prs = df_today[mask_pr_name | mask_notes]
-                
-                if data_source == "Live Zoho API Sync" and not dmg_today_prs.empty:
+                if data_source == "Live Zoho API Sync":
                     access_token = get_zoho_access_token()
                     org_id = st.secrets["zoho"]["organization_id"]
                     domain = st.secrets["zoho"].get("domain", "zoho.in")
                     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
 
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        futures = {
-                            executor.submit(fetch_single_pr_details, row["purchasereceive_id"], headers, domain, org_id): row
-                            for _, row in dmg_today_prs.iterrows() if "purchasereceive_id" in row and pd.notna(row["purchasereceive_id"])
-                        }
+                    # Fetch detail for all PRs in window to check their Notes and Attachments
+                    pr_id_col = find_first_existing_col(df_today, ['purchasereceive_id', 'Receive ID'])
+                    unique_today_pr_ids = df_today[pr_id_col].dropna().unique().tolist() if pr_id_col else []
+
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = [
+                            executor.submit(fetch_single_pr_details, pid, headers, domain, org_id)
+                            for pid in unique_today_pr_ids
+                        ]
                         for future in as_completed(futures):
-                            parent_row = futures[future]
                             pr_detail = future.result()
-                            
-                            pr_raw_number = ""
                             if pr_detail:
-                                pr_raw_number = pr_detail.get("purchasereceive_number") or pr_detail.get("receive_number") or pr_detail.get("purchasereceive_no") or ""
-                            if not pr_raw_number:
-                                pr_raw_number = str(parent_row.get(pr_no_col, ""))
+                                pr_raw_number = pr_detail.get("purchasereceive_number") or pr_detail.get("receive_number") or ""
+                                notes_text = str(pr_detail.get("notes", "") or "")
+                                
+                                # Check if marked as damage/expiry/short in PR number OR Notes
+                                combined_check = f"{pr_raw_number} {notes_text}".lower()
+                                if any(kw in combined_check for kw in ["damage", "damaged", "expiry", "expired", "short", "shortage"]):
+                                    r_date = pr_detail.get("date", "")
+                                    if isinstance(r_date, pd.Timestamp):
+                                        formatted_date = r_date.strftime("%d/%m/%Y")
+                                    elif isinstance(r_date, str) and r_date:
+                                        try:
+                                            formatted_date = pd.to_datetime(r_date).strftime("%d/%m/%Y")
+                                        except:
+                                            formatted_date = r_date
+                                    else:
+                                        formatted_date = ""
 
-                            r_date = pr_detail.get("date", parent_row.get(time_col, "")) if pr_detail else parent_row.get(time_col, "")
-                            if isinstance(r_date, pd.Timestamp):
-                                formatted_date = r_date.strftime("%d/%m/%Y")
-                            elif isinstance(r_date, str) and r_date:
-                                try:
-                                    formatted_date = pd.to_datetime(r_date).strftime("%d/%m/%Y")
-                                except:
-                                    formatted_date = r_date
-                            else:
-                                formatted_date = ""
+                                    v_name = pr_detail.get("vendor_name", "")
+                                    po_num = pr_detail.get("purchaseorder_number", "")
+                                    item_reason = detect_damage_reason(pr_raw_number, notes_text)
+                                    att_list = pr_detail.get("attachment_names", [])
+                                    pr_done_on = classify_pr_source(att_list)
 
-                            v_name = pr_detail.get("vendor_name", parent_row.get(vendor_col_pr, "")) if pr_detail else parent_row.get(vendor_col_pr, "")
-                            po_num = pr_detail.get("purchaseorder_number", parent_row.get(po_ref_in_pr, "")) if pr_detail else parent_row.get(po_ref_in_pr, "")
+                                    line_items = pr_detail.get("line_items", [])
+                                    for item in line_items:
+                                        qty_val = item.get("quantity", item.get("quantity_received", 0))
+                                        try:
+                                            qty_clean = int(round(float(qty_val)))
+                                        except:
+                                            qty_clean = qty_val
 
-                            line_items = pr_detail.get("line_items", []) if pr_detail else []
-                            notes_text = (pr_detail.get("notes", "") or parent_row.get(notes_col, "")) if pr_detail else parent_row.get(notes_col, "")
-                            item_reason = detect_damage_reason(pr_raw_number, notes_text)
-                            
-                            # Attachment source determination
-                            att_list = pr_detail.get("attachment_names", []) if pr_detail else []
-                            pr_done_on = classify_pr_source(att_list)
+                                        detailed_damage_items.append({
+                                            "Date": formatted_date,
+                                            "vendor name": v_name,
+                                            "PO NO": po_num,
+                                            "Item": item.get("name", item.get("item_name", "")),
+                                            "Qty": qty_clean,
+                                            "reason": item_reason,
+                                            "PR done on": pr_done_on
+                                        })
 
-                            if line_items:
-                                for item in line_items:
-                                    qty_val = item.get("quantity", item.get("quantity_received", 0))
-                                    try:
-                                        qty_clean = int(round(float(qty_val)))
-                                    except:
-                                        qty_clean = qty_val
+                elif data_source == "Upload Files":
+                    # Excel mode: df_today contains Notes column directly
+                    mask_pr = df_today[pr_no_col].astype(str).str.contains("damage|expiry|expired|short", case=False, na=False) if pr_no_col in df_today.columns else pd.Series(False, index=df_today.index)
+                    mask_n = df_today[notes_col].astype(str).str.contains("damage|damaged|expiry|expired|short|shortage", case=False, na=False) if (notes_col and notes_col in df_today.columns) else pd.Series(False, index=df_today.index)
+                    dmg_subset = df_today[mask_pr | mask_n]
 
-                                    detailed_damage_items.append({
-                                        "Date": formatted_date,
-                                        "vendor name": v_name,
-                                        "PO NO": po_num,
-                                        "Item": item.get("name", item.get("item_name", "")),
-                                        "Qty": qty_clean,
-                                        "reason": item_reason,
-                                        "PR done on": pr_done_on
-                                    })
-                            else:
-                                try:
-                                    qty_clean = int(round(float(parent_row.get("Clean_PR_Qty", 0))))
-                                except:
-                                    qty_clean = parent_row.get("Clean_PR_Qty", 0)
+                    item_col = find_first_existing_col(dmg_subset, ['Item Name', 'item_name', 'Item', 'name'])
+                    att_col = find_first_existing_col(dmg_subset, ['attachment', 'Attachment', 'File Name', 'Documents', 'documents'])
 
-                                detailed_damage_items.append({
-                                    "Date": formatted_date,
-                                    "vendor name": v_name,
-                                    "PO NO": po_num,
-                                    "Item": parent_row.get("Item Name", parent_row.get("item_name", "")),
-                                    "Qty": qty_clean,
-                                    "reason": item_reason,
-                                    "PR done on": pr_done_on
-                                })
-
-                elif data_source == "Upload Files" and not dmg_today_prs.empty:
-                    item_col = find_first_existing_col(dmg_today_prs, ['Item Name', 'item_name', 'Item', 'name'])
-                    att_col = find_first_existing_col(dmg_today_prs, ['attachment', 'Attachment', 'File Name', 'Documents', 'documents'])
-
-                    for _, row in dmg_today_prs.iterrows():
+                    for _, row in dmg_subset.iterrows():
                         r_date = row.get(time_col, "")
                         if isinstance(r_date, pd.Timestamp):
                             formatted_date = r_date.strftime("%d/%m/%Y")
@@ -501,7 +469,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                         row_notes = str(row.get(notes_col, "")) if notes_col else ""
                         item_reason = detect_damage_reason(row.get(pr_no_col, ""), row_notes)
                         
-                        # Check attachment column if file export had one, else empty string
                         att_val = [str(row[att_col])] if (att_col and pd.notna(row.get(att_col))) else []
                         pr_done_on = classify_pr_source(att_val)
 
@@ -651,7 +618,7 @@ if "processed_df" in st.session_state:
     )
 
     # ==============================================================
-    # --- DEDICATED DAMAGE / SHORT REPORT (7-COLUMN USER FORMAT) ---
+    # --- DEDICATED DAMAGE / SHORT REPORT (7 COLUMNS) ---
     # ==============================================================
     df_damage = st.session_state.get("raw_damage", pd.DataFrame())
     if not df_damage.empty:
@@ -659,8 +626,12 @@ if "processed_df" in st.session_state:
         st.subheader("🚨 Damage / Short Details (Item-wise)")
         st.markdown(f"Found **{len(df_damage)}** damage/short record(s) flagged within the **{active_window}-Hour Window**.")
 
+        # Ensure all 7 columns exist
         target_cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
-        df_damage_display = df_damage[[c for c in target_cols if c in df_damage.columns]]
+        for c in target_cols:
+            if c not in df_damage.columns:
+                df_damage[c] = ""
+        df_damage_display = df_damage[target_cols]
 
         st.table(df_damage_display)
 
@@ -684,25 +655,23 @@ if "processed_df" in st.session_state:
             align_right = Alignment(horizontal="right", vertical="center")
 
             cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
-            existing_cols = [c for c in cols if c in df_dmg.columns]
-            
-            ws.append(existing_cols)
-            for col_idx in range(1, len(existing_cols) + 1):
+            ws.append(cols)
+            for col_idx in range(1, len(cols) + 1):
                 cell = ws.cell(row=1, column=col_idx)
                 cell.fill = header_fill
                 cell.font = font_header
                 cell.border = full_border
                 cell.alignment = align_center
 
-            for r_idx, row in enumerate(df_dmg[existing_cols].values, start=2):
+            for r_idx, row in enumerate(df_dmg[cols].values, start=2):
                 ws.append(list(row))
-                for col_idx in range(1, len(existing_cols) + 1):
+                for col_idx in range(1, len(cols) + 1):
                     cell = ws.cell(row=r_idx, column=col_idx)
                     cell.fill = white_fill
                     cell.font = font_regular
                     cell.border = full_border
 
-                    col_name = existing_cols[col_idx - 1]
+                    col_name = cols[col_idx - 1]
                     if col_name in ["Date", "PO NO", "PR done on"]:
                         cell.alignment = align_center
                     elif col_name == "Qty":
@@ -713,7 +682,7 @@ if "processed_df" in st.session_state:
             for col in ws.columns:
                 max_len = max(len(str(cell.value or '')) for cell in col)
                 col_letter = get_column_letter(col[0].column)
-                ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
             out = io.BytesIO()
             wb.save(out)
