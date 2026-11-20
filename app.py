@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import json
 import requests
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -93,17 +94,9 @@ def detect_damage_reason(pr_number, notes=""):
     combined = f"{pr_number} {notes}".lower()
     if "short" in combined or "shortage" in combined:
         return "Shortage"
-    # All damage, expired, or near expiry notes are strictly classified as "Damage"
     return "Damage"
 
 def classify_pr_source(attachment_names, notes="", receive_number="", bill_number=""):
-    """
-    Classifies PR source:
-    - Attachment contains 'bill' -> 'HHD'
-    - Attachment starts with '202' or contains 'whatsapp' -> 'Zoho'
-    - Checks metadata for 'hhd'
-    - Guaranteed fallback: 'Zoho' (never blank)
-    """
     combined_meta = f"{notes} {receive_number} {bill_number}".lower()
     if attachment_names:
         for name in attachment_names:
@@ -177,7 +170,6 @@ def fetch_po_by_number(po_number, headers, domain, org_id):
     return None
 
 def fetch_single_pr_details(pr_id, headers, domain, org_id):
-    """Fetch complete PR detail including line items and attachments from Zoho API."""
     try:
         url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives/{pr_id}"
         res = requests.get(url, headers=headers, params={"organization_id": org_id}).json()
@@ -185,7 +177,6 @@ def fetch_single_pr_details(pr_id, headers, domain, org_id):
             pr_data = res["purchasereceive"]
             attachments = []
             
-            # Check documents array
             for doc in pr_data.get("documents", []):
                 name = doc.get("file_name", "") if isinstance(doc, dict) else str(doc)
                 if name:
@@ -196,7 +187,6 @@ def fetch_single_pr_details(pr_id, headers, domain, org_id):
                 if name:
                     attachments.append(name)
 
-            # Check dedicated attachments endpoint if list was empty
             if not attachments:
                 try:
                     att_url = f"https://www.zohoapis.{domain}/inventory/v1/purchasereceives/{pr_id}/attachments"
@@ -357,7 +347,7 @@ if df_po_raw is not None and df_pr_raw is not None:
 
             merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged.get('Vendor_PO', '')).fillna('')
             merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
-            merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
+            merged['PR Qty'] = pd.to_numeric(merged['PR Qty'], errors='coerce').fillna(0).astype(int)
             merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
             
             merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
@@ -424,7 +414,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                                 notes_text = str(pr_detail.get("notes", "") or "")
                                 bill_text = str(pr_detail.get("bill_number", "") or "")
                                 
-                                # Inspect both PR number and Notes
                                 combined_check = f"{pr_raw_number} {notes_text}".lower()
                                 if any(kw in combined_check for kw in ["damage", "damaged", "expiry", "expired", "short", "shortage"]):
                                     r_date = pr_detail.get("date", "")
@@ -442,8 +431,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                                     po_num = pr_detail.get("purchaseorder_number", "")
                                     item_reason = detect_damage_reason(pr_raw_number, notes_text)
                                     att_list = pr_detail.get("attachment_names", [])
-                                    
-                                    # Guaranteed classification: Never blank
                                     pr_done_on = classify_pr_source(att_list, notes_text, pr_raw_number, bill_text)
 
                                     line_items = pr_detail.get("line_items", [])
@@ -504,7 +491,6 @@ if df_po_raw is not None and df_pr_raw is not None:
                         row_bill = str(row.get(bill_col, "")) if bill_col else ""
                         item_reason = detect_damage_reason(row.get(pr_no_col, ""), row_notes)
                         att_val = [str(row[att_col])] if (att_col and pd.notna(row.get(att_col))) else []
-                        
                         pr_done_on = classify_pr_source(att_val, row_notes, str(row.get(pr_no_col, "")), row_bill)
 
                         detailed_damage_items.append({
@@ -746,10 +732,19 @@ if "processed_df" in st.session_state:
                                 "sheet_name": sheet_tab_name,
                                 "rows": df_damage_display.to_dict(orient="records")
                             }
-                            res = requests.post(webhook_url, json=payload, timeout=20)
-                            if res.status_code == 200:
-                                st.success(f"✅ Successfully exported {len(df_damage_display)} row(s) to '{sheet_tab_name}'!")
-                            else:
-                                st.error(f"Error ({res.status_code}): {res.text}")
+                            res = requests.post(
+                                webhook_url,
+                                data=json.dumps(payload),
+                                headers={"Content-Type": "text/plain;charset=utf-8"},
+                                timeout=20
+                            )
+                            try:
+                                result_json = res.json()
+                                if result_json.get("status") == "success":
+                                    st.success(f"✅ Synced! Added {result_json.get('appended', 0)} new row(s) to '{sheet_tab_name}' (skipped duplicates).")
+                                else:
+                                    st.error(f"Apps Script Error: {result_json.get('message')}")
+                            except Exception:
+                                st.error("Webhook returned HTML instead of JSON. Ensure Apps Script is deployed as Web App with 'Who has access: Anyone'.")
                 except Exception as e:
                     st.error(f"Sync error: {e}")
