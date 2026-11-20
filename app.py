@@ -347,7 +347,7 @@ if df_po_raw is not None and df_pr_raw is not None:
 
             merged['Vendor Name'] = merged['Vendor_PR'].fillna(merged.get('Vendor_PO', '')).fillna('')
             merged['PO Qty'] = pd.to_numeric(merged['PO_Qty'], errors='coerce').fillna(0).astype(int)
-            merged['PR Qty'] = pd.to_numeric(merged['PR Qty'], errors='coerce').fillna(0).astype(int)
+            merged['PR Qty'] = pd.to_numeric(merged['PR_Qty'], errors='coerce').fillna(0).astype(int)
             merged['PRMTD'] = pd.to_numeric(merged['PRMTD'], errors='coerce').fillna(0).astype(int)
             
             merged['Total Received'] = merged['PR Qty'] + merged['PRMTD']
