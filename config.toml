@@ -1,0 +1,8 @@
+# Dark "control room" theme for the PO vs PR app
+[theme]
+base = "dark"
+primaryColor = "#22C55E"
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#1B2336"
+textColor = "#F8FAFC"
+font = "sans serif"
