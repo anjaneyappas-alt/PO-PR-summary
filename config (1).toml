@@ -1,0 +1,11 @@
+# Light theme, matching the DC01 Bin Finder app
+[theme]
+base = "light"
+primaryColor = "#1D4ED8"
+backgroundColor = "#EEF2F7"
+secondaryBackgroundColor = "#F8FAFC"
+textColor = "#0F172A"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
