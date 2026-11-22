@@ -170,6 +170,17 @@ div[data-testid="stTextInput"] div[data-baseweb="input"] { border-radius: 12px !
 .stButton > button[kind="primary"]:hover { background: #1E40AF !important; border-color: #1E40AF !important; }
 button:focus-visible, input:focus-visible, [role="radio"]:focus-visible { outline: 2px solid var(--blue) !important; outline-offset: 2px !important; }
 
+/* ---------- Excel-style summary table ---------- */
+.xl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #BFBFBF; margin-bottom: 14px; }
+table.xl { border-collapse: collapse; width: 100%; background: #FFFFFF; font-size: 15px; color: #000000; }
+table.xl th { background: #E6E6E6; font-weight: 700; text-align: center; padding: 8px 10px; border: 1px solid #BFBFBF; white-space: nowrap; }
+table.xl td { text-align: center; padding: 7px 10px; border: 1px solid #D9D9D9; white-space: nowrap; }
+table.xl td.n { font-family: "Fira Code", monospace; font-variant-numeric: tabular-nums; }
+table.xl tbody tr:nth-child(even) td { background: #F9F9F9; }
+table.xl tbody tr:hover td { background: #EEF4FF; }
+table.xl td.pend { background: #FFF3CD !important; color: #856404; font-weight: 700; }
+table.xl tr.total td { background: #F4B084 !important; font-weight: 700; border-top: 2px solid #000000; border-bottom: 3px double #000000; }
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 """, unsafe_allow_html=True)
@@ -675,7 +686,26 @@ def generate_excel_file(df):
     pending_col_idx = headers.index('Pending Qty') + 1 if 'Pending Qty' in headers else None
 
     for r_idx, row_data in enumerate(df.values, start=2):
-        ws.append(list(row_data))
+        row_vals = list(row_data)
+        for i, h in enumerate(headers):
+            v = row_vals[i]
+            if h == "Date" and isinstance(v, str) and v:
+                try:
+                    row_vals[i] = datetime.strptime(v, "%d-%m-%y")
+                except ValueError:
+                    pass
+            elif h == "PO FR %" and isinstance(v, str) and v.endswith("%"):
+                try:
+                    row_vals[i] = float(v.rstrip("%")) / 100
+                except ValueError:
+                    pass
+        ws.append(row_vals)
+        for i, h in enumerate(headers):
+            c = ws.cell(row=r_idx, column=i + 1)
+            if h == "Date" and isinstance(c.value, datetime):
+                c.number_format = "dd-mm-yy"
+            elif h == "PO FR %" and isinstance(c.value, float):
+                c.number_format = "0%"
         is_total_row = (str(row_data[headers.index('Vendor Name')]) == 'Total') if 'Vendor Name' in headers else False
 
         for col_idx in range(1, len(headers) + 1):
@@ -889,6 +919,33 @@ dmg_reason = df_damage_display["reason"].astype(str).str.lower()
 dmg_units = int(dmg_qty_num.sum())
 
 
+def summary_table_html(df):
+    """The PO vs PR summary exactly like the Excel sheet: grey header, centred cells,
+    amber pending cells, orange Total row."""
+    th = ''.join(f'<th>{c}</th>' for c in df.columns)
+    body = []
+    for _, r in df.iterrows():
+        is_total = str(r.get("Vendor Name", "")) == "Total"
+        tds = []
+        for c in df.columns:
+            v = r[c]
+            cls = []
+            if c == "Vendor Name" and not is_total:
+                cls.append("l")
+            if c in ("PO Qty", "Today PR Qty", "PRMTD", "Pending Qty", "PO FR %"):
+                cls.append("n")
+            if c == "Pending Qty" and not is_total:
+                try:
+                    if float(v) > 0:
+                        cls.append("pend")
+                except (TypeError, ValueError):
+                    pass
+            txt = f"{v:,}" if isinstance(v, (int, np.integer)) and c not in ("Sl.no",) else ("" if pd.isna(v) else v)
+            tds.append(f'<td class="{" ".join(cls)}">{txt}</td>')
+        body.append(f'<tr class="{"total" if is_total else ""}">{"".join(tds)}</tr>')
+    return f'<div class="xl-wrap"><table class="xl"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
 def top_pending_df(n=10):
     return (recon_df[recon_df["Pending Qty"] > 0].sort_values("Pending Qty", ascending=False).head(n)
             .assign(PO=lambda d: d["PO No"].astype(str) + " · " + d["Vendor Name"].astype(str).str.slice(0, 24)))
@@ -924,6 +981,23 @@ if page == "Overview":
             <div class="k-value">{dmg_records:,}</div><div class="k-sub">{dmg_units:,} units flagged</div></div>
     </div>
     """, unsafe_allow_html=True)
+
+    with st.container(border=True, key="card_summary"):
+        hl, hr = st.columns([3, 1.2], vertical_alignment="center")
+        with hl:
+            st.markdown(f'<div class="sec-title">PO vs PR summary</div>'
+                        f'<div class="sec-sub">{total_pos_cnt} PO(s) with a PR in the last {active_window} hours</div>',
+                        unsafe_allow_html=True)
+        with hr:
+            st.download_button(":material/download: Download (.xlsx)", data=generate_excel_file(display_df),
+                               file_name=f"PO_PR_Summary_{active_window}h.xlsx", key="dl_overview",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               width="stretch")
+        sum_view = display_df
+        if query:
+            body_rows = matches(display_df[display_df["Vendor Name"] != "Total"], ["PO No", "PR No", "Vendor Name"], query)
+            sum_view = pd.concat([body_rows, display_df[display_df["Vendor Name"] == "Total"]])
+        st.markdown(summary_table_html(sum_view), unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
