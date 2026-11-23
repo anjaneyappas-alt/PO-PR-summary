@@ -772,7 +772,7 @@ def generate_damage_excel(df_dmg):
         align_left = Alignment(horizontal="left", vertical="center")
         align_right = Alignment(horizontal="right", vertical="center")
 
-        cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
+        cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason"]
         ws.append(cols)
         for col_idx in range(1, len(cols) + 1):
             cell = ws.cell(row=1, column=col_idx)
@@ -913,7 +913,7 @@ recon_df["Fill %"] = pd.to_numeric(recon_df["PO FR %"].astype(str).str.rstrip("%
 for c in ["PO Qty", "Today PR Qty", "PRMTD", "Pending Qty"]:
     recon_df[c] = pd.to_numeric(recon_df[c], errors="coerce").fillna(0).astype(int)
 
-target_cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
+target_cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason"]
 if not df_damage.empty:
     for c in target_cols:
         if c not in df_damage.columns:
@@ -982,7 +982,7 @@ def push_damage_rows(rows_df, tab_name):
 
 def damage_table_html(df):
     """Damage / short table like the Damage Report Excel: yellow header, black grid, Total row."""
-    cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
+    cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason"]
     th = "".join(f"<th>{c}</th>" for c in cols)
     body = []
     for _, r in df[cols].iterrows():
@@ -997,7 +997,7 @@ def damage_table_html(df):
         body.append(f"<tr>{''.join(tds)}</tr>")
     total_qty = int(pd.to_numeric(df["Qty"], errors="coerce").fillna(0).sum())
     body.append(f'<tr class="total"><td></td><td></td><td></td><td class="l">Total</td>'
-                f'<td class="n">{total_qty:,}</td><td></td><td></td></tr>')
+                f'<td class="n">{total_qty:,}</td><td></td></tr>')
     return f'<div class="xl-wrap dmg"><table class="xl dmg"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
@@ -1179,7 +1179,6 @@ elif page == "Damage":
                     "Item": st.column_config.TextColumn("Item", width="large"),
                     "Qty": st.column_config.NumberColumn("Qty", format="%d"),
                     "reason": st.column_config.TextColumn("Reason"),
-                    "PR done on": st.column_config.TextColumn("PR done on"),
                 })
 
         with st.container(border=True, key="card_5"):
