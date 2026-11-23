@@ -172,7 +172,7 @@ button:focus-visible, input:focus-visible, [role="radio"]:focus-visible { outlin
 
 /* ---------- Excel-style summary table ---------- */
 .xl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #BFBFBF; margin-bottom: 14px; }
-table.xl { border-collapse: collapse; width: 100%; background: #FFFFFF; font-size: 15px; color: #000000; }
+table.xl { margin: 0 !important; border-collapse: collapse; width: 100%; background: #FFFFFF; font-size: 15px; color: #000000; }
 table.xl th { background: #E6E6E6; font-weight: 700; text-align: center; padding: 8px 10px; border: 1px solid #BFBFBF; white-space: nowrap; }
 table.xl td { text-align: center; padding: 7px 10px; border: 1px solid #D9D9D9; white-space: nowrap; }
 table.xl td.n { font-family: "Fira Code", monospace; font-variant-numeric: tabular-nums; }
@@ -180,6 +180,13 @@ table.xl tbody tr:nth-child(even) td { background: #F9F9F9; }
 table.xl tbody tr:hover td { background: #EEF4FF; }
 table.xl td.pend { background: #FFF3CD !important; color: #856404; font-weight: 700; }
 table.xl tr.total td { background: #F4B084 !important; font-weight: 700; border-top: 2px solid #000000; border-bottom: 3px double #000000; }
+table.xl.dmg th { background: #F2DC9B; border: 1px solid #000000; }
+table.xl.dmg td { border: 1px solid #000000; }
+table.xl.dmg tbody tr:nth-child(even) td { background: #FFFFFF; }
+table.xl td.l { text-align: left; }
+table.xl td.rs-dmg { color: #B91C1C; font-weight: 700; }
+table.xl td.rs-short { color: #B45309; font-weight: 700; }
+.xl-wrap.dmg { border-color: #000000; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
@@ -946,6 +953,54 @@ def summary_table_html(df):
     return f'<div class="xl-wrap"><table class="xl"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
+def push_damage_rows(rows_df, tab_name):
+    """Send damage rows to the Apps Script webhook and show the result."""
+    try:
+        webhook_url = st.secrets.get("google", {}).get("webhook_url", "")
+        if not webhook_url:
+            st.error("Add `webhook_url` under `[google]` in Streamlit Secrets.", icon=":material/error:")
+            return
+        with st.spinner(f"Pushing to '{tab_name}'..."):
+            payload = {"sheet_name": tab_name, "rows": rows_df.to_dict(orient="records")}
+            res = requests.post(webhook_url, data=json.dumps(payload),
+                                headers={"Content-Type": "text/plain;charset=utf-8"}, timeout=20)
+        try:
+            result_json = res.json()
+        except Exception:
+            st.error("Webhook returned HTML instead of JSON. Deploy the Apps Script as a Web App "
+                     "with 'Who has access: Anyone'.", icon=":material/error:")
+            return
+        if result_json.get("status") == "success":
+            st.success(f"Added {result_json.get('appended', 0)} row(s), skipped "
+                       f"{result_json.get('skipped', 0)} duplicate(s) in '{tab_name}'.",
+                       icon=":material/check_circle:")
+        else:
+            st.error(f"Apps Script error: {result_json.get('message')}", icon=":material/error:")
+    except Exception as e:
+        st.error(f"Sync error: {e}", icon=":material/error:")
+
+
+def damage_table_html(df):
+    """Damage / short table like the Damage Report Excel: yellow header, black grid, Total row."""
+    cols = ["Date", "vendor name", "PO NO", "Item", "Qty", "reason", "PR done on"]
+    th = "".join(f"<th>{c}</th>" for c in cols)
+    body = []
+    for _, r in df[cols].iterrows():
+        tds = []
+        for c in cols:
+            v = r[c]
+            txt = "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
+            cls = {"vendor name": "l", "Item": "l", "Qty": "n"}.get(c, "")
+            if c == "reason":
+                cls = "rs-dmg" if txt.lower() == "damage" else ("rs-short" if txt.lower() == "shortage" else "")
+            tds.append(f'<td class="{cls}">{txt}</td>')
+        body.append(f"<tr>{''.join(tds)}</tr>")
+    total_qty = int(pd.to_numeric(df["Qty"], errors="coerce").fillna(0).sum())
+    body.append(f'<tr class="total"><td></td><td></td><td></td><td class="l">Total</td>'
+                f'<td class="n">{total_qty:,}</td><td></td><td></td></tr>')
+    return f'<div class="xl-wrap dmg"><table class="xl dmg"><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
 def top_pending_df(n=10):
     return (recon_df[recon_df["Pending Qty"] > 0].sort_values("Pending Qty", ascending=False).head(n)
             .assign(PO=lambda d: d["PO No"].astype(str) + " · " + d["Vendor Name"].astype(str).str.slice(0, 24)))
@@ -998,6 +1053,32 @@ if page == "Overview":
             body_rows = matches(display_df[display_df["Vendor Name"] != "Total"], ["PO No", "PR No", "Vendor Name"], query)
             sum_view = pd.concat([body_rows, display_df[display_df["Vendor Name"] == "Total"]])
         st.markdown(summary_table_html(sum_view), unsafe_allow_html=True)
+
+    with st.container(border=True, key="card_damage_overview"):
+        if df_damage_display.empty:
+            st.markdown(f'<div class="sec-title">Damage / short details</div>'
+                        f'<div class="sec-sub">Nothing flagged in the last {active_window} hours.</div>',
+                        unsafe_allow_html=True)
+        else:
+            dl, dr1, dr2 = st.columns([2.2, 1, 1], vertical_alignment="center")
+            with dl:
+                st.markdown(f'<div class="sec-title">Damage / short details</div>'
+                            f'<div class="sec-sub">{len(df_damage_display)} item(s) · {dmg_units:,} units · '
+                            f'pushes to the <b>{st.session_state.get("sheet_tab", "Damage_Short")}</b> tab</div>',
+                            unsafe_allow_html=True)
+            with dr1:
+                push_ov = st.button(":material/cloud_upload: Push to Google Sheet", type="primary",
+                                    width="stretch", key="push_overview")
+            with dr2:
+                st.download_button(":material/download: Download (.xlsx)",
+                                   data=generate_damage_excel(df_damage_display),
+                                   file_name=f"Damage_Report_{active_window}h.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   width="stretch", key="dl_damage_overview")
+            dmg_view = matches(df_damage_display, ["vendor name", "PO NO", "Item"], query)
+            st.markdown(damage_table_html(dmg_view), unsafe_allow_html=True)
+            if push_ov:
+                push_damage_rows(df_damage_display, st.session_state.get("sheet_tab", "Damage_Short"))
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1107,7 +1188,8 @@ elif page == "Damage":
                         unsafe_allow_html=True)
             a1, a2, a3 = st.columns([1.4, 1, 1], vertical_alignment="bottom")
             with a1:
-                sheet_tab_name = st.text_input("Sheet tab", value="Damage_Short")
+                sheet_tab_name = st.text_input("Sheet tab", value=st.session_state.get("sheet_tab", "Damage_Short"), key="sheet_tab_input")
+                st.session_state["sheet_tab"] = sheet_tab_name
             with a2:
                 push = st.button(":material/cloud_upload: Push to Google Sheet", type="primary", width="stretch")
             with a3:
@@ -1118,29 +1200,7 @@ elif page == "Damage":
                                    width="stretch")
 
             if push:
-                try:
-                    webhook_url = st.secrets.get("google", {}).get("webhook_url", "")
-                    if not webhook_url:
-                        st.error("Add `webhook_url` under `[google]` in Streamlit Secrets.", icon=":material/error:")
-                    else:
-                        with st.spinner(f"Pushing to '{sheet_tab_name}'..."):
-                            payload = {"sheet_name": sheet_tab_name,
-                                       "rows": df_damage_display.to_dict(orient="records")}
-                            res = requests.post(webhook_url, data=json.dumps(payload),
-                                                headers={"Content-Type": "text/plain;charset=utf-8"}, timeout=20)
-                            try:
-                                result_json = res.json()
-                                if result_json.get("status") == "success":
-                                    st.success(f"Added {result_json.get('appended', 0)} row(s), skipped "
-                                               f"{result_json.get('skipped', 0)} duplicate(s) in '{sheet_tab_name}'.",
-                                               icon=":material/check_circle:")
-                                else:
-                                    st.error(f"Apps Script error: {result_json.get('message')}", icon=":material/error:")
-                            except Exception:
-                                st.error("Webhook returned HTML instead of JSON. Deploy the Apps Script as a Web App "
-                                         "with 'Who has access: Anyone'.", icon=":material/error:")
-                except Exception as e:
-                    st.error(f"Sync error: {e}", icon=":material/error:")
+                push_damage_rows(df_damage_display, sheet_tab_name)
 
 # ---------------- Insights ----------------
 elif page == "Insights":
